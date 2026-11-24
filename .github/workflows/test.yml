@@ -1,0 +1,29 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e '.[dev]'
+      - run: pytest -q          # GPU·Docker 없이 mock 백엔드로 돈다
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 문법 검사
+        run: for f in deploy/*.sh deploy/*/*.sh; do bash -n "$f"; done
+      - name: shellcheck (설치 스크립트)
+        run: shellcheck -S error deploy/install.sh deploy/install-arch.sh deploy/shared-apps.sh

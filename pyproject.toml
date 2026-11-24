@@ -1,13 +1,14 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ironlab"
 version = "0.1.0"
 description = "공유 GPU 서버용 사용자 워크스페이스·GPU 작업 큐·모니터링·파일 관리 도구"
+license = "MIT"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"   # tomllib
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
@@ -17,6 +18,9 @@ dependencies = [
     "nvidia-ml-py>=12.0",
     "httpx>=0.27",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Hong-Iron/ironlab"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

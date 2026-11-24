@@ -1,30 +1,164 @@
 # ironlab
 
-RTX 3090 한 장을 여러 명이 같이 쓰는 서버를 위한 관리 도구입니다.
+NVIDIA GPU 한 장을 여러 명이 같이 쓰는 서버를 위한 관리 도구입니다. 연구실·동아리·팀의 GPU 서버에 설치하면, 그 서버의 사용자들이 웹 콘솔과 CLI 로 GPU 를 나눠 씁니다.
 
 - **사용자 워크스페이스** — 사람마다 GPU가 붙은 Docker 컨테이너를 하나씩. CPU·RAM 한도, 개인 홈, SSH 접속
 - **GPU 작업 큐** — 필요 VRAM을 선언하고 줄을 서면, 자리가 날 때 자동 실행
 - **모니터링** — 누가 접속했고, 누가 CPU·RAM·VRAM을 얼마나 쓰는지 (GPU 프로세스를 사용자까지 추적)
 - **파일 관리** — 개인 홈(쿼터)·스크래치·공용 모델/데이터셋, 웹·CLI 업로드/다운로드
+- **로컬 LLM** — llama.cpp 서버 하나를 모두가 OpenAI 호환 API 로 공유
+- **생성 화면 (선택)** — 그림·3D·음악·영상·음성·효과음 생성 모델을 웹 양식과 노드 편집기로
 
 웹 대시보드와 `ironlab` CLI가 같은 REST API(`/api/docs`)를 씁니다.
 
 ```
-노트북 ──Tailscale──▶ tailscale serve(443) ──▶ ironlab API :8700 (127.0.0.1)
-   │                                             ├─ Docker: ironlab-ws-<사용자>, ironlab-job-<id>
-   └──Tailscale──▶ ssh -p 220xx dev@서버 ──▶ 사용자 워크스페이스 컨테이너
+노트북 ──(Tailscale / 같은 네트워크 / HTTPS 프록시)──▶ ironlab 콘솔·API :8700
+   │                                                    ├─ Docker: ironlab-ws-<사용자>, ironlab-job-<id>, ironlab-llm
+   └──────────────── ssh -p 220xx dev@서버 ──────────▶ 사용자 워크스페이스 컨테이너
 ```
+
+---
+
+## 설치
+
+### 필요한 것
+
+| | |
+|---|---|
+| 운영체제 | Ubuntu 22.04 / 24.04, Debian 12, Arch Linux (다른 배포판은 아래 `SKIP_PACKAGES=1`) |
+| GPU | NVIDIA GPU 와 드라이버. `nvidia-smi` 가 GPU 를 보여야 합니다. 생성 화면의 기본값은 24GB 카드에 맞춰져 있습니다 ([GPU 가 다르면](#gpu-가-다르면)) |
+| 디스크 | 이미지·모델에 수백 GB. 큰 디스크가 따로 있으면 `BIG=<마운트 위치>` |
+| 네트워크 | 사용자가 서버에 닿을 방법 하나: Tailscale, 같은 네트워크(LAN), 또는 HTTPS 리버스 프록시 |
+
+Docker, NVIDIA Container Toolkit, Python 3.12 는 설치 스크립트가 깝니다.
+
+### 빠른 설치
+
+```bash
+git clone https://github.com/Hong-Iron/ironlab.git
+cd ironlab
+sudo ADMIN=admin SITE_NAME="우리 연구실 GPU" bash deploy/install.sh
+```
+
+끝나면 콘솔 주소와 관리자 접근 토큰이 화면에 나옵니다. 토큰은 이때 한 번만 보이니 적어 두세요. 잃어버리면 서버에서 `sudo IRONLAB_CONFIG=/etc/ironlab/config.toml /opt/ironlab/venv/bin/ironlab-server reset-token admin` 으로 다시 받습니다. 스크립트는 여러 번 실행해도 안전합니다.
+
+| 옵션 (환경변수) | 뜻 |
+|---|---|
+| `ADMIN=이름` | 처음 만들 관리자. 소문자로 시작하는 영문·숫자·`-`·`_` |
+| `ACCESS=auto` | 콘솔을 여는 방식. 아래 [접속 방식](#접속-방식) |
+| `SITE_NAME="…"` | 로그인 화면·옆 메뉴·브라우저 탭에 보일 이름 |
+| `TS_LOGIN=name@github` | (Tailscale) 관리자의 Tailscale 계정. 토큰 없이 들어옵니다 |
+| `PUBLIC_HOST=…` `PUBLIC_URL=…` | 사용자에게 안내할 서버 주소·콘솔 주소 (도메인이 있거나 프록시를 붙일 때) |
+| `PORT=8700` | 콘솔 포트 |
+| `GPU_INDEX=0` | GPU 가 여러 장이면 맡을 GPU 번호 (`nvidia-smi -L` 순서) |
+| `BIG=/data` | 큰 디스크. Docker·containerd·`/srv` 를 그 위에 bind mount 합니다 (기본: 옮기지 않음) |
+| `WITH_TRELLIS=1` | TRELLIS.2/Pixal3D 가 든 워크스페이스 이미지까지 빌드 (1시간 이상) |
+| `SKIP_PACKAGES=1` | 패키지 설치를 건너뜀. Docker(buildx)·NVIDIA Container Toolkit·curl·rsync·python3 를 직접 깔았을 때 |
+
+`SITE_NAME`, `ACCESS`, `PUBLIC_*`, `PORT`, `GPU_INDEX` 는 설정 파일을 처음 만들 때만 씁니다. 나중에 바꾸려면 `/etc/ironlab/config.toml` 을 고치고 `sudo systemctl restart ironlab`.
+
+### 접속 방식
+
+| `ACCESS` | 콘솔 주소 | 로그인 | 언제 |
+|---|---|---|---|
+| `tailscale` | `https://<서버>.<tailnet>.ts.net` (tailnet 안에서만) | Tailscale 계정으로 자동, 또는 토큰 | 집·밖에서도 써야 할 때. 가장 권장 |
+| `lan` | `http://<서버 IP>:8700` | 접근 토큰 | 모두 같은 사설망(공유기·사내망) 안에 있을 때 |
+| `local` | `127.0.0.1:8700` 에만 열림 → 직접 붙인 HTTPS 프록시 주소 | 접근 토큰 | 도메인과 인증서가 있을 때 |
+| `auto` (기본) | Tailscale 에 로그인돼 있으면 `tailscale`, 사설 IP 면 `lan` | | 공인 IP 서버에서는 고르라고 멈춥니다 |
+
+- **tailscale:** 서버에 [Tailscale](https://tailscale.com/download/linux) 을 깔고 `sudo tailscale up` 을 한 뒤 설치합니다. 관리 콘솔에서 MagicDNS 와 HTTPS 인증서를 켜 두세요. 스크립트가 `tailscale serve --bg 8700` 으로 엽니다. 워크스페이스 SSH 도 Tailscale IP 에만 열립니다.
+- **lan:** 암호화 없는 http 입니다. 접근 토큰이 망 안에서 그대로 오가므로, 밖에서 닿지 않는 망에서만 쓰세요. 방화벽(ufw·firewalld)이 켜져 있으면 스크립트가 열 명령을 알려 줍니다.
+- **local + 리버스 프록시:** 예를 들어 Caddy 는 아래 두 줄이면 인증서까지 받습니다. `PUBLIC_URL=https://gpu.example.ac.kr` 를 함께 주면 화면의 안내 주소가 맞습니다.
+
+  ```
+  gpu.example.ac.kr {
+      reverse_proxy 127.0.0.1:8700
+  }
+  ```
+
+  nginx 는 업로드 크기 제한과 응답 버퍼를 풀어야 합니다 (`client_max_body_size 0; proxy_buffering off; proxy_read_timeout 1h;`). LLM 채팅과 로그가 흘러나오는 응답을 씁니다.
+
+### 사용자 추가
+
+콘솔 > 사용자 > 추가에서 이름과 한도를 넣으면 접근 토큰이 나옵니다. 그 토큰을 본인에게 전해 주세요. 사용자는 로그인한 뒤 SSH 공개키를 등록하고 워크스페이스를 켭니다. CLI 로는 아래 [사용법](#사용법).
+
+### 업데이트
+
+```bash
+cd ironlab && git pull
+sudo bash deploy/install.sh
+```
+
+설정 파일, 사용자, 홈의 파일, 작업 기록은 그대로입니다. 서비스가 다시 뜨는 몇 초 동안 콘솔이 끊기고, 실행 중인 워크스페이스·작업은 계속 돕니다 (Docker 설정이 바뀐 경우만 예외이며 스크립트가 미리 알립니다).
+
+### GPU 가 다르면
+
+- **용량:** 큐는 GPU 용량을 직접 읽습니다(`gpu_total_vram_gb = 0`). VRAM 알림도 용량의 92% 에서 울립니다.
+- **24GB 보다 작은 카드 (12·16GB):** 워크스페이스, 작업 큐, 로컬 LLM 은 그대로 씁니다. 생성 화면은 모델마다 예약 VRAM(`gen*_vram_gb`, 4~22GB)이 정해져 있고, 카드보다 큰 예약은 제출할 때 "VRAM은 … 이하여야 합니다" 로 거절됩니다. 그 생성기는 켜지 않거나, 모델이 실제로 들어가는 설정을 찾은 뒤 예약 값을 낮추세요.
+- **24GB 보다 큰 카드:** 바꿀 것이 없습니다. 여러 작업이 동시에 더 많이 돕니다.
+- **여러 장:** ironlab 은 `gpu_index` 한 장만 맡습니다. 컨테이너에도 그 한 장만 보입니다. 나머지 GPU 는 ironlab 밖에서 쓸 수 있습니다.
+- **MIG·vGPU 없는 카드:** VRAM 을 하드웨어로 나눌 수 없어 아래의 예약 방식으로 나눕니다.
+
+### 손으로 설치하기
+
+설치 스크립트가 하는 일을 나눠 적으면 이렇습니다.
+
+1. **Docker + NVIDIA Container Toolkit:** 배포판에 맞게 [Docker](https://docs.docker.com/engine/install/)와 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)을 깔고 연결합니다.
+   ```bash
+   sudo nvidia-ctk runtime configure --runtime=docker
+   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+   sudo systemctl restart docker
+   docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi   # GPU가 보이면 OK
+   ```
+2. **디렉터리:**
+   ```bash
+   sudo mkdir -p /srv/users /srv/shared/models/hub /srv/shared/models/llm /srv/shared/datasets /srv/scratch /etc/ironlab
+   ```
+   홈 쿼터는 **업로드할 때만 검사하는 소프트 쿼터**입니다. 컨테이너 안에서 직접 쓰는 양은 막지 못하고, 대시보드에 사용량으로만 드러납니다. 강제하려면 파일시스템 쿼터가 필요합니다: ext4는 프로젝트 쿼터(`tune2fs -O project,quota` 후 `prjquota` 마운트), btrfs는 사용자 홈을 서브볼륨으로 만들고 qgroup을 겁니다. 설치 스크립트는 이 설정을 하지 않습니다.
+3. **이미지:**
+   ```bash
+   docker build -t ironlab/workspace:latest deploy/workspace
+   docker build -t ironlab/workspace:trellis deploy/trellis    # TRELLIS.2·Pixal3D 사전 빌드 (선택, 오래 걸림)
+   ```
+4. **ironlab:** Python 3.11 이상이 필요합니다. [uv](https://docs.astral.sh/uv/) 로 3.12 를 받아 쓰는 것이 간단합니다.
+   ```bash
+   sudo uv venv --python 3.12 /opt/ironlab/venv
+   sudo uv pip install --python /opt/ironlab/venv/bin/python .
+   sudo cp deploy/config.example.toml /etc/ironlab/config.toml      # 접속 방식에 맞게 위쪽 값을 고침
+   sudo IRONLAB_CONFIG=/etc/ironlab/config.toml /opt/ironlab/venv/bin/ironlab-server create-admin admin
+   sudo cp deploy/ironlab.service /etc/systemd/system/
+   sudo systemctl enable --now ironlab
+   ```
+5. **공개:** Tailscale 이면 `sudo tailscale serve --bg 8700`. 다른 방식은 [접속 방식](#접속-방식).
+
+### 보안 메모
+
+- Tailscale 헤더는 같은 기계(127.0.0.1)에서 넘어온 요청에서만, 그리고 `trust_tailscale_headers = true` 일 때만 믿습니다. 이때 API는 `127.0.0.1`에만 바인딩해 두세요.
+- 다른 웹사이트의 페이지가 브라우저를 통해 보낸 변경 요청(업로드, 중지 등)은 거절합니다.
+- `/metrics`는 서버 안에서 직접 긁을 때만 로그인 없이 열리고, 프록시나 네트워크를 거치면 관리자 로그인이 필요합니다.
+- 웹 파일 관리자는 홈·스크래치 안의 심볼릭 링크를 따라가지 않습니다(목록에는 보이지만 열 수 없음). 공용 영역은 영역 안을 가리키는 링크만 따라갑니다.
+- 사용자를 `docker` 그룹에 넣지 마세요 (사실상 root). 컨테이너는 ironlab만 만듭니다.
+- 컨테이너는 `cap_drop=ALL`, `no-new-privileges` 로 뜨며 sudo가 없습니다. 워크스페이스 SSH 는 공개키로만 들어갑니다. 패키지는 conda로 홈에 설치합니다.
+- 더 강하게 격리하려면 dockerd의 `userns-remap` 을 고려하세요 (사용자 UID 매핑을 함께 조정해야 함).
+- 다른 사람의 작업 명령·로그는 볼 수 없고, 목록에는 이름·VRAM·상태만 보입니다.
+
+### 공용 모델 채우기
+```bash
+sudo HF_HUB_CACHE=/srv/shared/models/hub /opt/ironlab/venv/bin/hf download microsoft/TRELLIS.2-4B
+sudo chmod -R a+rX /srv/shared
+```
+컨테이너는 `HF_HUB_CACHE=/shared/models/hub`, `HF_HUB_OFFLINE=1` 로 뜨므로 사용자는 다운로드 없이 바로 씁니다.
 
 ---
 
 ## GPU를 어떻게 나누나
 
-3090은 MIG(하드웨어 분할)가 없어서 VRAM을 강제로 쪼갤 수 없습니다. 그래서 ironlab은 **예약 + 감시** 방식을 씁니다.
+GeForce 계열(3090·4090 등)은 MIG(하드웨어 분할)가 없어서 VRAM을 강제로 쪼갤 수 없습니다. 그래서 ironlab은 **예약 + 감시** 방식을 씁니다.
 
 | 상황 | 동작 |
 |---|---|
 | 작업 제출 | "이 작업은 VRAM 12GB 필요"처럼 선언 |
-| 실행 판단 | `여유 = 24 − 안전여유(1) − 실행 중 작업 예약 − 큐 밖 사용량(워크스페이스 노트북 등)` 이 요청보다 크면 시작 |
+| 실행 판단 | `여유 = GPU 전체 − 안전여유(1) − 실행 중 작업 예약 − 큐 밖 사용량(워크스페이스 노트북 등)` 이 요청보다 크면 시작 |
 | 순서 | 먼저 낸 작업 우선. 큰 작업이 못 돌면 뒤의 작은 작업을 끼워 넣음(backfill) |
 | 기아 방지 | 맨 앞 작업이 30분 넘게 기다리면 끼워넣기를 멈추고 그 작업에 자리를 몰아줌 |
 | 공정성 | 사용자당 동시 실행 1개(설정 가능), 사용자별 VRAM 상한 설정 가능 |
@@ -35,78 +169,26 @@ RTX 3090 한 장을 여러 명이 같이 쓰는 서버를 위한 관리 도구�
 
 워크스페이스 안에서 노트북으로 가볍게 GPU를 쓰는 건 막지 않습니다(그 사용량만큼 큐의 여유가 줄어듭니다). 무거운 작업은 큐로 보내는 걸 규칙으로 정해 주세요.
 
----
-
 ## 먼저 돌려보기 (GPU·Docker 없이)
+
+설치 전에 화면을 보고 싶으면 노트북에서 mock 서버를 띄웁니다 (Python 3.11 이상).
 
 ```bash
 pip install -e .
 ironlab-server demo          # 가짜 사용자 3명 + 작업 4개로 mock 서버 실행, 토큰 출력
-# 브라우저: http://127.0.0.1:8700
+# 브라우저: http://127.0.0.1:8700  (admin 토큰으로 로그인)
 ```
 
-## 서버 설치 (Arch Linux)
+## 생성기 켜기 (선택)
 
-### 빠른 설치 (권장)
+생성 화면(그림·3D·음악·영상·음성·효과음·소리 다듬기·여러 방향 그림)은 서버에 모델과 실행 환경이 있어야 켜집니다. 설치 스크립트는 이것을 받지 않습니다. 모델마다 수~수십 GB 이고 라이선스가 따로 있으니(아래 각 절), 필요한 것만 고르세요. ironlab 의 MIT 라이선스는 이 저장소의 코드에만 해당합니다.
 
-NVIDIA 드라이버가 동작하고(`nvidia-smi`) `sudo tailscale up`으로 tailnet에 로그인한 상태에서:
-
-```bash
-unzip ironlab.zip && cd ironlab
-sudo ADMIN=cheolmin TS_LOGIN=you@github bash deploy/install-arch.sh
-sudo WITH_TRELLIS=1 bash deploy/install-arch.sh     # 나중에 TRELLIS 이미지까지 (1시간+)
-```
-
-스크립트는 Docker·containerd·`/srv`를 큰 파티션(`/home`) 위에 연결하고, NVIDIA 런타임과 CDI를 설정하고, 이미지를 빌드한 뒤 설정 파일을 Tailscale 정보로 채워 서비스를 띄웁니다. 여러 번 실행해도 안전합니다. 아래는 같은 과정을 손으로 하는 방법입니다.
-
-### 1. 사전 준비
-```bash
-sudo pacman -S docker docker-buildx nvidia-container-toolkit uv
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
-sudo systemctl enable --now docker
-docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi   # GPU가 보이면 OK
-```
-
-### 2. 디렉터리
-```bash
-sudo mkdir -p /srv/users /srv/shared/models/hub /srv/shared/models/llm /srv/shared/datasets /srv/scratch /etc/ironlab
-```
-ironlab의 홈 쿼터는 **업로드할 때만 검사하는 소프트 쿼터**입니다. 컨테이너 안에서 직접 쓰는 양은 막지 못하고, 대시보드에 사용량으로만 드러납니다. 강제하려면 파일시스템 쿼터가 필요합니다: ext4는 프로젝트 쿼터(`tune2fs -O project,quota` 후 `prjquota` 마운트), btrfs는 사용자 홈을 서브볼륨으로 만들고 qgroup을 겁니다. 빠른 설치 스크립트는 이 설정을 하지 않습니다.
-
-### 3. 이미지 빌드
-```bash
-docker build -t ironlab/workspace:latest deploy/workspace
-docker build -t ironlab/workspace:trellis deploy/trellis    # TRELLIS.2·Pixal3D 사전 빌드 (오래 걸림)
-```
-
-### 4. ironlab 설치
-```bash
-sudo uv venv --python 3.12 /opt/ironlab/venv        # 시스템 파이썬 대신 uv 가 받은 3.12 를 쓴다
-sudo uv pip install --python /opt/ironlab/venv/bin/python /path/to/ironlab
-sudo cp deploy/config.example.toml /etc/ironlab/config.toml   # 값 수정 (ssh_bind_ip = tailscale ip -4)
-sudo IRONLAB_CONFIG=/etc/ironlab/config.toml /opt/ironlab/venv/bin/ironlab-server create-admin cheolmin --tailscale-login 본인@github
-sudo cp deploy/ironlab.service /etc/systemd/system/
-sudo systemctl enable --now ironlab
-```
-
-### 5. Tailscale로 공개
-```bash
-sudo tailscale serve --bg 8700
-```
-`https://<서버이름>.<tailnet>.ts.net` 으로 tailnet 안에서만 열립니다. `trust_tailscale_headers = true` 이면 tailscale serve가 붙이는 `Tailscale-User-Login` 헤더로 자동 로그인됩니다(사용자 추가 시 Tailscale 로그인을 연결).
-
-보안 관련 동작:
-- Tailscale 헤더는 같은 기계(127.0.0.1)에서 넘어온 요청에서만 믿습니다. API는 `127.0.0.1`에만 바인딩해 두세요.
-- 다른 웹사이트의 페이지가 브라우저를 통해 보낸 변경 요청(업로드, 중지 등)은 거절합니다.
-- `/metrics`는 서버 안에서 직접 긁을 때만 로그인 없이 열리고, tailnet을 거치면 관리자 로그인이 필요합니다.
-- 웹 파일 관리자는 홈·스크래치 안의 심볼릭 링크를 따라가지 않습니다(목록에는 보이지만 열 수 없음). 공용 영역은 영역 안을 가리키는 링크만 따라갑니다.
-
-### 6. 공용 모델 채우기
-```bash
-sudo HF_HUB_CACHE=/srv/shared/models/hub hf download microsoft/TRELLIS.2-4B
-```
-컨테이너는 `HF_HUB_CACHE=/shared/models/hub`, `HF_HUB_OFFLINE=1` 로 뜨므로 사용자는 다운로드 없이 바로 씁니다.
+1. 관리자 워크스페이스에서 아래 각 생성기 절의 **준비**대로 환경과 모델을 받고, `deploy/gen*/` 의 실행 스크립트를 홈의 생성기 폴더에 둡니다. 그 사용자에게 화면이 켜지면 한 번 돌려 봅니다.
+2. 모두에게 엽니다. 관리자 홈의 모델·환경을 공용(`/srv/shared/models`)으로 옮기고 사용자 홈마다 링크를 겁니다.
+   ```bash
+   sudo bash deploy/shared-apps.sh --migrate-from admin
+   ```
+3. 그 뒤로는 `deploy/install.sh` 를 다시 돌릴 때마다 실행 스크립트를 새 판으로 바꾸고, 새로 추가한 사용자에게도 링크를 겁니다.
 
 ---
 
@@ -115,7 +197,7 @@ sudo HF_HUB_CACHE=/srv/shared/models/hub hf download microsoft/TRELLIS.2-4B
 llama.cpp 서버 하나를 모두가 공유합니다. 콘솔의 **로컬 LLM** 페이지에서 모델을 올리고 내리며, 채팅으로 바로 써 볼 수 있습니다.
 
 - **VRAM:** 올릴 때 GPU 큐의 여유를 확인하고, 올라가 있는 동안은 그만큼 큐 예약에서 빠집니다. `llm_idle_unload_min`(기본 20분) 동안 아무도 쓰지 않으면 자동으로 내려 3D 작업에 GPU를 돌려줍니다.
-- **API:** OpenAI 호환. 노트북에서는 `https://<서버>/v1` + 접근 토큰(또는 Tailscale 계정). 워크스페이스·작업 컨테이너 안에는 `OPENAI_BASE_URL`이 미리 들어 있고, 컨테이너 IP로 사용자를 알아보므로 키가 필요 없습니다(내부 프록시는 ironlab Docker 네트워크 게이트웨이 `172.30.0.1:8701`에만 열림).
+- **API:** OpenAI 호환. 노트북에서는 `<콘솔 주소>/v1` + 접근 토큰(또는 Tailscale 계정). 콘솔의 로컬 LLM 화면에 주소가 나옵니다. 워크스페이스·작업 컨테이너 안에는 `OPENAI_BASE_URL`이 미리 들어 있고, 컨테이너 IP로 사용자를 알아보므로 키가 필요 없습니다(내부 프록시는 ironlab Docker 네트워크 게이트웨이 `172.30.0.1:8701`에만 열림).
 - **사용량:** 사용자별 요청 수와 입력·출력 토큰이 남습니다. 대화 내용은 저장하지 않습니다.
 - **컨텍스트 길이:** 요청 하나가 쓸 수 있는 길이는 `컨텍스트 ÷ 동시 요청 수`입니다(32,768 토큰에 동시 요청 2개면 요청당 16,384 토큰). 이 값은 `/v1/models` 응답의 `context_length`와 `meta.n_ctx`에 실려 나가므로, 이 값을 읽는 에이전트 도구는 길이를 따로 적지 않아도 됩니다.
 - **설정 고치기:** 모델 표의 **수정**에서 컨텍스트, 동시 요청 수, VRAM 예약, 추가 인자를 바꿉니다. 올라가 있는 모델은 고칠 수 없으므로 먼저 내립니다. 바꾼 설정은 다음에 올릴 때부터 쓰입니다.
@@ -355,7 +437,7 @@ chmod -R a+rX /srv/shared/models/hub'
 
 콘솔의 "영상 생성" 화면에 장면을 적으면 소리가 든 영상(MP4, 2~15초, 1초에 24장, 스테레오 소리)이 만들어집니다. 모델은 [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3)입니다. 화면과 소리를 한 번에 만들기 때문에, 장면에 적은 대사와 발소리가 화면의 입 모양·움직임과 맞습니다.
 
-**라이선스를 먼저 봅니다.** MiniMax H3 Community License 는 유럽연합, 영국, 대한민국, 미국을 '제외 지역'으로 정합니다. 이 지역에서 쓰려면 MiniMax 에 신청해 허가를 받아야 합니다 ([신청서](https://platform.minimax.io/h3-license), [라이선스 Q&A](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/QA-about-License.md)). 이 서버에는 관리자의 판단으로 설치했습니다 (2026-11-14).
+**라이선스를 먼저 봅니다.** MiniMax H3 Community License 는 유럽연합, 영국, 대한민국, 미국을 '제외 지역'으로 정합니다. 이 지역에서 쓰려면 MiniMax 에 신청해 허가를 받아야 합니다 ([신청서](https://platform.minimax.io/h3-license), [라이선스 Q&A](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/QA-about-License.md)). 설치할지는 각 서버의 관리자가 이 조건을 보고 정합니다.
 
 - **켜지는 조건:** 사용자 홈에 `minimax-h3-run/h3.sh` 가 있으면 그 사용자에게 화면이 켜집니다.
 - **적는 칸 세 개:** 장면(화면, 움직임, 카메라, 대사), 주변 소리, 배경 음악. 실행 스크립트가 셋을 MiniMax 가 정한 프롬프트 모양(`integrated_multimodal_description`, `overall_soundscape`, `non_diegetic_music`)으로 묶습니다. 영어가 가장 잘 듣고, 대사는 `<d>[Korean] 안녕하세요</d>` 처럼 감쌉니다.
@@ -365,7 +447,7 @@ chmod -R a+rX /srv/shared/models/hub'
 - **이어 만들기:** 보기 창의 "끝 장면에서 이어 만들기"를 누르면 이 영상의 마지막 장면이 다음 영상의 첫 장면 칸에 들어갑니다. 장면 설명만 다음 이야기로 고쳐 만들면 두 영상이 이어집니다.
 - **상세 설정:** 단계 수, 흐름 이동, 샘플러, 시간표 직접 주기, 주의 계산 묶음 크기, 공간·시간 조각으로 풀기, MP4 화질.
 - **잰 값 (RTX 3090 24GB, 2026-11-14):** Flash 로 1344×768 5.2초 영상 355초 (영상 만들기 289초, 한 단계 약 48초, 풀어내기 51초), GPU 메모리 최대 21.9GB. 본체로 864×480 2.3초 영상 20단계 131초. 본체의 1344×768 5.2초 영상은 한 단계 약 54초라 20단계면 20분쯤 걸립니다. 시간은 크기와 길이보다 빠르게 늘어납니다. 864×480 2.3초에서 1344×768 5.2초로 화면 조각 수가 5.5배가 되자 한 단계 시간은 약 10배(5.5초 → 54초)가 되었습니다. 화면 조각끼리 서로를 보는 계산(주의)이 조각 수보다 빨리 늘기 때문입니다. 그래서 고를 때는 864×480 으로 빨리 보고, 마음에 드는 것을 큰 크기로 다시 만드는 편이 낫습니다.
-- **VRAM 예약:** 22GB. 24GB 카드에서 늘 1GB 를 남기므로 23GB 이상을 예약하면 작업이 시작되지 못합니다. 실행 스크립트는 `sd-cli` 의 무게·버퍼 몫을 19GiB 로 묶습니다 (묶지 않으면 남은 GPU 메모리를 다 써서 24,006MiB 까지 찼습니다).
+- **VRAM 예약:** 22GB. 24GB 카드에서 늘 1GB 를 남기므로 23GB 이상을 예약하면 작업이 시작되지 못합니다 (24GB 보다 작은 카드에서는 이 생성기를 쓸 수 없습니다). 실행 스크립트는 `sd-cli` 의 무게·버퍼 몫을 19GiB 로 묶습니다 (묶지 않으면 남은 GPU 메모리를 다 써서 24,006MiB 까지 찼습니다).
 
 준비는 사용자마다 한 번입니다. `deploy/genvideo/` 의 세 파일을 홈에 두고 설치 스크립트를 돌립니다. 빌드와 내려받기(약 58GB)를 함께 합니다.
 
@@ -527,7 +609,7 @@ cp deploy/genpolish/* ~/polish-run/ && chmod +x ~/polish-run/polish.sh ~/polish-
 
 ### 관리자
 ```bash
-ironlab login --url https://gpubox.tailnet-xxxx.ts.net --token il_...
+ironlab login --url <콘솔 주소> --token il_...     # 예: https://gpubox.tailnet-xxxx.ts.net, http://192.168.0.10:8700
 ironlab admin add seoyeon --tailscale seoyeon@github --cpus 8 --mem 24 --disk 300
 ironlab admin set jihoon --max-vram 12        # VRAM 상한
 ironlab admin set jihoon --disable            # 계정 정지 (워크스페이스도 중지)
@@ -538,7 +620,7 @@ ironlab admin events
 ### 사용자
 ```bash
 ironlab key set ~/.ssh/id_ed25519.pub
-ironlab ws start                              # → ssh -p 22002 dev@gpubox...
+ironlab ws start                              # → ssh -p 22002 dev@<서버 주소>
 ironlab job submit --vram 12 --workdir projects/run1 -f -- \
     'conda activate trellis2 && python example.py --resolution 1536'
 ironlab job ls -a
@@ -557,16 +639,9 @@ ironlab top                                   # 실시간 현황
 | 재부팅 뒤 워크스페이스와 모델이 꺼져 있음 | 컨테이너를 자동으로 다시 켜지 않습니다. | 사용자가 콘솔에서 워크스페이스를 시작하고, 모델을 다시 올립니다. 홈과 스크래치의 파일은 그대로입니다. |
 | 대시보드의 논리 코어 수가 줄어듦 | 서버에서 논리 코어 일부를 꺼 두었습니다(`/sys/devices/system/cpu/cpuN/online`에 0). | 정상입니다. 코어 칸과 `/metrics`의 `core` 라벨은 실제 코어 번호를 쓰고, 꺼 둔 번호는 "논리 코어별 사용률" 옆에 나옵니다. |
 
-## 보안 메모
-
-- 사용자를 `docker` 그룹에 넣지 마세요 (사실상 root). 컨테이너는 ironlab만 만듭니다.
-- 컨테이너는 `cap_drop=ALL`, `no-new-privileges` 로 뜨며 sudo가 없습니다. 패키지는 conda로 홈에 설치합니다.
-- 더 강하게 격리하려면 dockerd의 `userns-remap` 을 고려하세요 (사용자 UID 매핑을 함께 조정해야 함).
-- 다른 사람의 작업 명령·로그는 볼 수 없고, 목록에는 이름·VRAM·상태만 보입니다.
-
 ## 설정
 
-`deploy/config.example.toml` 참고. 모든 항목은 `IRONLAB_<대문자>` 환경변수로 덮어쓸 수 있습니다. Prometheus는 `/metrics` (로컬 또는 관리자 토큰)를 긁어가면 사용자별 메트릭이 남습니다.
+`deploy/config.example.toml` 참고. 모든 항목은 `IRONLAB_<대문자>` 환경변수로 덮어쓸 수 있습니다. 서버마다 자주 바꾸는 값은 `site_name`(화면 이름), `public_host`·`public_url`(안내 주소), `gpu_index`, `default_cpus`·`default_mem_gb`·`default_disk_gb`(새 사용자 기본 한도), `max_running_jobs_per_user`, `idle_stop_hours`(유휴 워크스페이스 자동 중지)입니다. Prometheus는 `/metrics` (로컬 또는 관리자 토큰)를 긁어가면 사용자별 메트릭이 남습니다.
 
 ## 개발
 
@@ -584,3 +659,7 @@ pytest                       # mock 백엔드로 스케줄러·파일 보호·AP
 | `files.py` | 경로 보호·쿼터·업로드 |
 | `api.py`, `web/` | REST API, 대시보드 |
 | `cli.py` | `ironlab` CLI |
+
+## 라이선스
+
+[MIT](LICENSE). 생성 화면이 쓰는 모델(Pixal3D, Qwen-Image, YuE, MiniMax H3, Fish Audio, Woosh, Demucs, MV-Adapter 등)과 llama.cpp 로 올리는 LLM 은 각자의 라이선스를 따릅니다.

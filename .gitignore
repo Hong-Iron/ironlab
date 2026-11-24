@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+/build/
+/dist/
+.venv/
+.pytest_cache/
+.DS_Store
+# 로컬에서 띄운 데모·테스트 데이터
+ironlab-demo-*/
+*.db
