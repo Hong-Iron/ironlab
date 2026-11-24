@@ -19,7 +19,8 @@ def test_the_overview_says_who_and_what_fills_the_disk(env):
     llm.mkdir(parents=True)
     (llm / "m.gguf").write_bytes(b"w" * 2000)
 
-    assert client.get("/api/overview", headers=alice).json().get("storage") is None     # 아직 재지 않았다
+    # 아직 재지 않았다. API 로 보면 첫 수집이 디스크 재기를 뒤에서 시작해, 빠른 기계에서는 응답 전에 끝나 버린다
+    assert ctx.monitor.storage is None
     ctx.monitor._scan_disks()
     assert ctx.monitor.storage is not None
     ctx.monitor.collect()                                           # 화면이 읽는 개요는 다음 수집 때 새로 만들어진다
