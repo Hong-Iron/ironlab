@@ -254,7 +254,12 @@ case "$ACCESS" in
             [[ -n "$IP" ]] && is_public_ip "$IP" && warn "공인 IP($IP)에 http 로 엽니다. 밖에서 닿지 않는 망인지 꼭 확인하세요."
         else
             CFG_HOST=127.0.0.1; CFG_PUBLIC_URL="${PUBLIC_URL:-}"
+            if [[ -n "$CFG_PUBLIC_URL" && -z "${PUBLIC_HOST:-}" ]]; then
+                # SSH 안내 주소는 프록시 주소의 호스트 이름 (https://gpu.example.ac.kr → gpu.example.ac.kr)
+                CFG_PUBLIC_HOST=$(python3 -c 'import sys, urllib.parse as u; print(u.urlsplit(sys.argv[1]).hostname or "")' "$CFG_PUBLIC_URL")
+            fi
             ok "local: 127.0.0.1:$PORT 에만 엶 (리버스 프록시를 직접 붙이세요)"
+            [[ -n "$CFG_PUBLIC_URL" ]] || warn "PUBLIC_URL 이 없습니다. 프록시를 붙인 뒤 설정의 public_url 에 그 주소를 넣어야 화면의 안내 주소가 맞습니다."
         fi
         ;;
 esac
@@ -372,8 +377,8 @@ else
     ok "기존 $CONF 유지 (workspace_image = $IMAGE)"
 fi
 # 접속 방식·포트는 설정 파일이 정한다 (다시 실행할 때 환경변수와 달라도 설정을 따른다)
-read -r CFG_PORT CFG_HOST CFG_TRUST CFG_URL < <(IRONLAB_CONFIG="$CONF" "$PREFIX/venv/bin/python" -c \
-    "from ironlab.config import load_settings as l; s = l(); print(s.port, s.host, int(s.trust_tailscale_headers), s.console_url or '-')")
+read -r CFG_PORT CFG_HOST CFG_TRUST CFG_URL CFG_RAW_URL < <(IRONLAB_CONFIG="$CONF" "$PREFIX/venv/bin/python" -c \
+    "from ironlab.config import load_settings as l; s = l(); print(s.port, s.host, int(s.trust_tailscale_headers), s.console_url or '-', s.public_url or '-')")
 
 NEW_ADMIN=0
 if [[ -n "${ADMIN:-}" && ! -f /var/lib/ironlab/ironlab.db ]]; then
@@ -426,7 +431,14 @@ if [[ "$CFG_TRUST" == 1 ]]; then
     ok "$CONSOLE (tailnet 안에서만)"
 else
     CONSOLE="$CFG_URL"
-    [[ "$CONSOLE" == - ]] && CONSOLE="http://127.0.0.1:$CFG_PORT (프록시를 붙인 뒤 그 주소)"
+    if [[ "$CFG_HOST" == 127.0.0.1 ]]; then
+        # local: 이 기계 안에서만 열려 있다. 밖에서는 직접 붙인 프록시 주소(public_url)로 들어온다
+        if [[ "$CFG_RAW_URL" == - ]]; then
+            CONSOLE="http://127.0.0.1:$CFG_PORT 에만 열림 (프록시를 붙인 뒤 설정의 public_url 에 그 주소)"
+        else
+            CONSOLE="$CFG_RAW_URL (프록시 → 127.0.0.1:$CFG_PORT)"
+        fi
+    fi
     if [[ "$CFG_HOST" != 127.0.0.1 ]]; then
         if have ufw && ufw status 2>/dev/null | grep -q 'Status: active'; then
             FIREWALL_HINT="sudo ufw allow $CFG_PORT/tcp && sudo ufw allow 22001:22999/tcp"
