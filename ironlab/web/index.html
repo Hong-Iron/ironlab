@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ironlab console</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231c2330'/%3E%3Cpath d='M9 22V10h3.5v12zm6 0V10h3.5v8.5H24V22z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- 로그인 -->
+<div id="login" class="login hidden">
+  <div class="login-art">
+    <div class="brand"><span class="logo">IL</span>ironlab</div>
+    <div>
+      <h2>RTX 3090 한 장을 여럿이 나눠 쓰는 연구실 콘솔</h2>
+      <p>워크스페이스를 켜고, GPU 작업을 줄 세우고, 누가 얼마나 쓰는지 확인하세요.</p>
+      <div class="gpu-line" id="login-line"></div>
+    </div>
+    <p>tailnet 안에서만 열립니다.</p>
+  </div>
+  <div class="login-form">
+    <form id="login-form">
+      <h1>로그인</h1>
+      <p class="muted" style="margin:0">관리자에게 받은 접근 토큰을 붙여 넣으세요. Tailscale 계정이 연결돼 있으면 이 화면 없이 바로 들어옵니다.</p>
+      <div class="field"><label for="token-input">접근 토큰</label>
+        <input id="token-input" class="input" type="password" placeholder="il_..." autocomplete="off" required></div>
+      <button class="btn primary" type="submit" style="justify-content:center">로그인</button>
+      <div id="login-error" class="err"></div>
+    </form>
+  </div>
+</div>
+
+<!-- 앱 -->
+<div id="app" class="shell hidden">
+  <aside class="sidebar" id="sidebar">
+    <div class="side-brand"><span class="logo">IL</span><b>ironlab</b><span id="env-tag" class="env-tag hidden">mock</span></div>
+    <nav class="side-nav" id="side-nav"></nav>
+    <div class="side-gpu" id="side-gpu"></div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-toggle" id="menu-toggle" aria-label="메뉴"></button>
+      <div class="crumbs" id="crumbs"></div>
+      <div class="top-actions">
+        <button class="search-btn" id="open-palette" aria-label="이동 및 실행"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><span>이동하거나 실행하기</span><span class="kbd">⌘K</span></button>
+        <span class="updated" id="updated"></span>
+        <div class="refresh" title="자동 새로고침">
+          <button id="refresh-now" aria-label="지금 새로고침"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg></button>
+          <select id="refresh-every" aria-label="새로고침 주기">
+            <option value="0">끔</option><option value="1000">1초</option><option value="2000">2초</option><option value="5000" selected>5초</option><option value="15000">15초</option><option value="30000">30초</option>
+          </select>
+        </div>
+        <button class="avatar-btn" id="user-btn"><span class="avatar" id="me-avatar"></span><span id="me-name"></span></button>
+      </div>
+      <div class="menu hidden" id="user-menu">
+        <div class="who"><b id="menu-name"></b><small id="menu-role"></small></div>
+        <button data-nav="account">내 계정과 SSH 키</button>
+        <button id="logout">로그아웃</button>
+      </div>
+    </header>
+    <main class="page" id="page"></main>
+  </div>
+</div>
+
+<div class="scrim hidden" id="scrim"></div>
+<aside class="drawer closed" id="drawer" role="dialog" aria-modal="true"></aside>
+<div class="scrim palette-scrim hidden" id="palette-scrim"></div>
+<div class="palette hidden" id="palette" role="dialog"><input id="palette-input" placeholder="페이지 이동, 작업 제출, 워크스페이스 시작…" autocomplete="off"><ul id="palette-list"></ul></div>
+<div class="toasts" id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

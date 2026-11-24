@@ -1,0 +1,16 @@
+[Unit]
+Description=ironlab GPU server manager
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Environment=IRONLAB_CONFIG=/etc/ironlab/config.toml
+ExecStart=/opt/ironlab/venv/bin/ironlab-server serve
+Restart=on-failure
+RestartSec=5
+# 사용자 홈 chown, Docker 소켓, /proc 접근을 위해 root로 실행 (API는 127.0.0.1에만 바인딩)
+User=root
+
+[Install]
+WantedBy=multi-user.target

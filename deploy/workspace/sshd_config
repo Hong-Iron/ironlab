@@ -1,0 +1,14 @@
+Port 22
+AuthorizedKeysFile /etc/ironlab-keys/authorized_keys
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowUsers dev
+UsePAM no
+X11Forwarding no
+AllowTcpForwarding yes
+PrintMotd no
+Banner none
+AcceptEnv LANG LC_*
+ClientAliveInterval 60
+Subsystem sftp internal-sftp

@@ -1,0 +1,93 @@
+# /etc/ironlab/config.toml
+# 모든 항목은 IRONLAB_<대문자 이름> 환경변수로도 덮어쓸 수 있습니다.
+
+host = "127.0.0.1"                 # tailscale serve가 이 포트를 tailnet에 노출
+port = 8700
+trust_tailscale_headers = true     # tailscale serve가 붙이는 Tailscale-User-Login 으로 자동 로그인
+public_host = "gpubox.tailnet-xxxx.ts.net"   # 사용자에게 안내할 주소 (MagicDNS 이름)
+
+data_dir = "/var/lib/ironlab"
+users_root = "/srv/users"
+shared_root = "/srv/shared"
+scratch_root = "/srv/scratch"
+
+workspace_image = "ironlab/workspace:trellis"
+ssh_bind_ip = "100.64.0.1"         # 서버의 Tailscale IP (tailscale ip -4). 0.0.0.0이면 LAN에도 열림
+ssh_port_base = 22000
+shm_gb = 8
+hf_offline = true
+
+default_cpus = 8
+default_mem_gb = 16
+default_disk_gb = 200
+
+vram_reserve_gb = 1.0
+max_running_jobs_per_user = 1
+starvation_minutes = 30
+vram_overuse_action = "warn"       # 또는 "kill"
+
+monitor_interval_s = 10
+sample_interval_s = 1             # 대시보드를 보는 동안 CPU·RAM·GPU 수치를 갱신하는 주기(초)
+log_retention_days = 30           # 끝난 작업 로그 보관 기간 (0이면 지우지 않음)
+event_retention_days = 365        # 감사 로그·LLM 사용 기록 보관 기간 (0이면 지우지 않음)
+idle_stop_hours = 12
+vram_alert_gb = 22
+
+# 로컬 LLM (llama.cpp 서버 하나를 모두가 공유)
+llm_image = "ghcr.io/ggml-org/llama.cpp:server-cuda"
+llm_port = 8800                    # 127.0.0.1 에서만 열림
+llm_idle_unload_min = 20           # 이만큼 안 쓰면 자동으로 내림 (0이면 끔)
+network_name = "ironlab"           # 워크스페이스·작업 컨테이너 네트워크
+
+# 3D 생성 화면 (사진 한 장 → GLB). 사용자 홈에 <gen3d_dir>/<gen3d_script> 가 있으면 켜진다
+gen3d_dir = "pixal3d-run"         # 홈 기준 폴더: 실행 스크립트, inputs/, outputs/
+gen3d_script = "pixal3d.sh"       # deploy/gen3d/pixal3d.sh 를 복사해 쓴다
+gen3d_vram_gb = 18                 # 작업 하나에 예약할 VRAM (GB)
+gen3d_mv_vram_gb = 20              # 사진을 여러 장 넣었을 때 예약할 VRAM (GB). 여러 장 모델이 최대 약 17.9GB 를 썼다
+
+# 이미지 생성 화면 (글 → 그림). 사용자 홈에 <genimg_dir>/<genimg_script> 가 있으면 켜진다
+genimg_dir = "qwen-image-run"     # 홈 기준 폴더: 실행 스크립트, inputs/, outputs/
+genimg_script = "qwen-image.sh"   # deploy/genimg/ 의 파일들을 복사해 쓴다
+genimg_vram_gb = 21                # 작업 하나에 예약할 VRAM (GB)
+
+# 음악 생성 화면 (가사 → 노래). 사용자 홈에 <genmusic_dir>/<genmusic_script> 가 있으면 켜진다
+genmusic_dir = "yue2-run"         # 홈 기준 폴더: 실행 스크립트, inputs/, outputs/
+genmusic_script = "yue2.sh"       # deploy/genmusic/ 의 파일들을 복사해 쓴다
+genmusic_vram_gb = 16              # 작업 하나에 예약할 VRAM (GB)
+
+# 영상 생성 화면 (장면 설명 → 소리가 든 영상). 사용자 홈에 <genvideo_dir>/<genvideo_script> 가 있으면 켜진다
+genvideo_dir = "minimax-h3-run"   # 홈 기준 폴더: 실행 스크립트, bin/sd-cli, inputs/, outputs/
+genvideo_script = "h3.sh"         # deploy/genvideo/ 의 파일들을 복사해 쓴다 (setup_h3.sh 가 빌드와 내려받기를 한다)
+genvideo_vram_gb = 22              # 작업 하나에 예약할 VRAM (GB). 24GB 카드에서 23 이상이면 늘 1GB 를 남기느라 시작하지 못한다
+
+# 음성 생성 화면 (대본 → 목소리). 사용자 홈에 <genvoice_dir>/<genvoice_script> 가 있으면 켜진다
+genvoice_dir = "drama3-run"       # 홈 기준 폴더: 실행 스크립트, bin/audiocpp_cli, inputs/, outputs/
+genvoice_script = "drama3.sh"     # deploy/genvoice/ 의 파일들을 복사해 쓴다 (setup_drama3.sh 가 빌드와 내려받기를 한다)
+genvoice_vram_gb = 18              # 작업 하나에 예약할 VRAM (GB)
+
+# 효과음 생성 화면 (소리 설명 또는 영상 → 효과음). 사용자 홈에 <gensfx_dir>/<gensfx_script> 가 있으면 켜진다
+gensfx_dir = "woosh-run"          # 홈 기준 폴더: 실행 스크립트, inputs/, outputs/
+gensfx_script = "woosh.sh"        # deploy/gensfx/ 의 파일들을 복사해 쓴다 (setup_woosh.sh 가 환경과 모델을 받는다)
+gensfx_vram_gb = 7                # 작업 하나에 예약할 VRAM (GB)
+
+# 소리 다듬기 화면 (곡·목소리·효과음·영상의 소리 → 다듬은 소리). 사용자 홈에 <genpolish_dir>/<genpolish_script> 가 있으면 켜진다
+genpolish_dir = "polish-run"      # 홈 기준 폴더: 실행 스크립트, inputs/, outputs/
+genpolish_script = "polish.sh"    # deploy/genpolish/ 의 파일들을 복사해 쓴다 (setup_polish.sh 가 환경과 Demucs 가중치를 받는다)
+genpolish_vram_gb = 4             # '노래'로 나눌 때 예약할 VRAM (GB). 나누지 않으면 1GB 만 잡는다
+
+# 여러 방향 그림 화면 (사진 한 장 → 물체를 6·4방향에서 본 그림). 사용자 홈에 <genmv_dir>/<genmv_script> 가 있으면 켜진다
+genmv_dir = "mvadapter-run"      # 홈 기준 폴더: 실행 스크립트, inputs/, outputs/
+genmv_script = "mvadapter.sh"    # deploy/genmv/ 의 파일들을 복사해 쓴다 (setup_mvadapter.sh 가 환경·코드·가중치를 받는다)
+genmv_vram_gb = 17               # 작업 하나에 예약할 VRAM (GB)
+
+# 3D 생성 (모양 먼저): 사진 한 장 → 사진 한 장 3D 의 모양 + MV-Adapter 로 칠한 여섯 방향 색. 지금은 노드 편집기의 노드로만 쓴다
+genshape_dir = "shapefirst-run"  # 홈 기준 폴더: 실행 스크립트, inputs/, outputs/
+genshape_script = "shapefirst.sh"  # deploy/genshape/ 의 파일들. 3D 생성기(pixal3d-run)와 여러 방향 그림 생성기(mvadapter-run)를 함께 쓴다
+genshape_vram_gb = 18            # 작업 하나에 예약할 VRAM (GB)
+
+# 노드 편집기 (노드를 이어 붙인 그래프를 작업의 사슬로 실행). 노드는 위 세 화면의 실행 스크립트를 그대로 쓴다
+flow_dir = "flow-runs"            # 홈 기준 폴더: 실행마다 폴더 하나, 그 안에 노드의 결과
+flow_inputs_dir = "flow-inputs"   # 홈 기준 폴더: '사진'·'소리 파일' 노드에 올린 파일
+network_subnet = "172.30.0.0/24"
+network_gateway = "172.30.0.1"
+internal_port = 8701               # 컨테이너 안에서 쓰는 LLM 프록시 (게이트웨이 IP 에만 열림)
