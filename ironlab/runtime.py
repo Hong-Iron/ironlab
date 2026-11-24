@@ -243,7 +243,8 @@ class DockerRuntime(Runtime):
         from docker.types import DeviceRequest, Mount
         self._docker = docker
         self._Mount = Mount
-        self._gpu = [DeviceRequest(count=-1, capabilities=[["gpu"]])]
+        # 관리하는 GPU 한 장만 컨테이너에 보인다. 여러 장인 서버에서 스케줄러가 모르는 GPU 를 쓰지 않게 한다
+        self._gpu = [DeviceRequest(device_ids=[str(settings.gpu_index)], capabilities=[["gpu"]])]
         self.client = docker.from_env()
         self._cgroup = CgroupStats()
 

@@ -276,9 +276,15 @@ def create_app(settings: Settings | None = None, start_monitor: bool = True) -> 
                 "monitor_age_s": round(time.time() - snap["ts"], 1) if snap else None,   # 수집이 멈췄는지 밖에서 볼 수 있게
                 "backend_error": ctx.monitor.backend_error}
 
+    @app.get("/api/site")
+    def site():
+        """로그인 전에도 보이는 서버 이름 (로그인 화면·브라우저 탭)."""
+        return {"name": ctx.s.site_name or "ironlab", "tailscale": ctx.s.trust_tailscale_headers}
+
     @app.get("/api/me")
     def me(user: dict = Depends(current_user)):
-        return um.public_view(user, ctx.s) | {"public_host": ctx.s.public_host}
+        return um.public_view(user, ctx.s) | {"public_host": ctx.s.public_host, "public_url": ctx.s.console_url,
+                                              "site_name": ctx.s.site_name or "ironlab"}
 
     @app.put("/api/me/ssh-keys")
     def set_keys(body: KeysIn, user: dict = Depends(current_user)):
@@ -609,13 +615,13 @@ def create_app(settings: Settings | None = None, start_monitor: bool = True) -> 
     @app.get("/api/llm")
     def llm_status(user: dict = Depends(current_user)):
         day = time.time() - 86400
-        host = ctx.s.public_host or "<서버주소>"
+        base = ctx.s.console_url or "https://<서버주소>"
         return ctx.llm.status() | {
             "models": ctx.llm.models(),
             "usage_today": ctx.llm.usage(day),
             "usage_week": ctx.llm.usage(time.time() - 7 * 86400),
             "budget_gb": ctx.sched.budget_gb,
-            "endpoints": {"external": f"https://{host}/v1",
+            "endpoints": {"external": f"{base}/v1",
                           "internal": f"http://{ctx.s.network_gateway}:{ctx.s.internal_port}/v1"},
         }
 

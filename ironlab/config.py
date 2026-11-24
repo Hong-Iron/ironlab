@@ -18,10 +18,12 @@ class Settings:
     mock: bool = False
 
     # API 서버
-    host: str = "127.0.0.1"          # tailscale serve 뒤에 두므로 기본은 로컬만
+    host: str = "127.0.0.1"          # tailscale serve·리버스 프록시 뒤에 두면 127.0.0.1, LAN 에 바로 열면 0.0.0.0
     port: int = 8700
     trust_tailscale_headers: bool = False  # tailscale serve가 붙이는 사용자 헤더 신뢰 여부
-    public_host: str = ""             # 사용자에게 안내할 서버 주소 (예: gpubox.tailnet-xxxx.ts.net)
+    public_host: str = ""             # 사용자에게 안내할 서버 주소 (SSH 접속에 씀. 예: gpubox.tailnet-xxxx.ts.net, 192.168.0.10)
+    public_url: str = ""              # 사용자에게 안내할 콘솔 주소 (예: http://192.168.0.10:8700). 비우면 https://<public_host>
+    site_name: str = "ironlab"        # 로그인 화면·옆 메뉴·브라우저 탭에 보일 이름 (예: "비전연구실 GPU")
 
     # 경로
     data_dir: Path = Path("/var/lib/ironlab")     # DB, 작업 로그, SSH 키
@@ -43,6 +45,7 @@ class Settings:
     default_disk_gb: int = 200
 
     # GPU 스케줄링
+    gpu_index: int = 0                # 관리할 GPU 번호 (nvidia-smi 순서). 컨테이너에는 이 GPU 한 장만 보인다
     gpu_total_vram_gb: float = 0.0    # 0이면 NVML에서 자동 감지 (mock은 24)
     vram_reserve_gb: float = 1.0      # 항상 남겨둘 여유분
     max_running_jobs_per_user: int = 1
@@ -107,7 +110,14 @@ class Settings:
     event_retention_days: int = 365   # 감사 로그와 LLM 사용 기록을 보관하는 기간 (0이면 지우지 않음)
     history_points: int = 360         # 10초 × 360 = 1시간
     idle_stop_hours: float = 12.0     # 0이면 비활성
-    vram_alert_gb: float = 22.0
+    vram_alert_gb: float = 0.0       # 이만큼 넘게 쓰면 알림. 0이면 GPU 용량의 92% (24GB 카드면 약 22GB)
+
+    @property
+    def console_url(self) -> str:
+        """사용자에게 안내할 콘솔 주소. 모르면 빈 문자열 (화면은 브라우저 주소를 대신 쓴다)."""
+        if self.public_url:
+            return self.public_url.rstrip("/")
+        return f"https://{self.public_host}" if self.public_host else ""
 
     @property
     def db_path(self) -> Path:

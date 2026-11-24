@@ -152,4 +152,5 @@ class ResilientGpu(GpuMonitor):
 def make_gpu(settings: Settings, runtime) -> GpuMonitor:
     if settings.mock:
         return MockGpu(runtime, settings.gpu_total_vram_gb or 24.0)
-    return ResilientGpu()
+    index = settings.gpu_index
+    return ResilientGpu(factory=lambda: NvmlGpu(index))

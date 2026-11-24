@@ -15,18 +15,18 @@
 <!-- 로그인 -->
 <div id="login" class="login hidden">
   <div class="login-art">
-    <div class="brand"><span class="logo">IL</span>ironlab</div>
+    <div class="brand"><span class="logo">IL</span><span class="site-name">ironlab</span></div>
     <div>
-      <h2>RTX 3090 한 장을 여럿이 나눠 쓰는 연구실 콘솔</h2>
+      <h2>GPU 한 장을 여럿이 나눠 쓰는 연구실 콘솔</h2>
       <p>워크스페이스를 켜고, GPU 작업을 줄 세우고, 누가 얼마나 쓰는지 확인하세요.</p>
       <div class="gpu-line" id="login-line"></div>
     </div>
-    <p>tailnet 안에서만 열립니다.</p>
+    <p>ironlab · 공유 GPU 서버 관리</p>
   </div>
   <div class="login-form">
     <form id="login-form">
       <h1>로그인</h1>
-      <p class="muted" style="margin:0">관리자에게 받은 접근 토큰을 붙여 넣으세요. Tailscale 계정이 연결돼 있으면 이 화면 없이 바로 들어옵니다.</p>
+      <p class="muted" style="margin:0">관리자에게 받은 접근 토큰을 붙여 넣으세요.<span id="login-ts" class="hidden"> Tailscale 계정이 연결돼 있으면 이 화면 없이 바로 들어옵니다.</span></p>
       <div class="field"><label for="token-input">접근 토큰</label>
         <input id="token-input" class="input" type="password" placeholder="il_..." autocomplete="off" required></div>
       <button class="btn primary" type="submit" style="justify-content:center">로그인</button>
@@ -38,7 +38,7 @@
 <!-- 앱 -->
 <div id="app" class="shell hidden">
   <aside class="sidebar" id="sidebar">
-    <div class="side-brand"><span class="logo">IL</span><b>ironlab</b><span id="env-tag" class="env-tag hidden">mock</span></div>
+    <div class="side-brand"><span class="logo">IL</span><b class="site-name">ironlab</b><span id="env-tag" class="env-tag hidden">mock</span></div>
     <nav class="side-nav" id="side-nav"></nav>
     <div class="side-gpu" id="side-gpu"></div>
   </aside>

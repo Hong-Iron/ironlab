@@ -2,6 +2,7 @@
 
   ironlab-server serve                         API·대시보드 실행
   ironlab-server create-admin NAME [--tailscale-login LOGIN]
+  ironlab-server reset-token NAME              접근 토큰 재발급 (관리자 토큰을 잃어버렸을 때, 서버에서 sudo 로)
   ironlab-server demo                          mock 모드로 데모 사용자·작업을 만들어 실행
 """
 
@@ -97,6 +98,16 @@ def _create_admin(args) -> None:
     print(f"토큰 (다시 볼 수 없으니 저장하세요): {token}")
 
 
+def _reset_token(args) -> None:
+    s = load_settings()
+    db = DB(s.db_path)
+    if not db.get_user(args.name):
+        sys.exit(f"오류: 사용자 '{args.name}' 가 없습니다")
+    token = um.rotate_token(db, args.name)
+    db.log_event("user.token", args.name, "ironlab-server reset-token")
+    print(f"'{args.name}' 의 새 토큰 (예전 토큰은 더 쓸 수 없습니다): {token}")
+
+
 def _demo(args) -> None:
     """mock 모드 데모: 임시 디렉터리에 사용자 3명과 작업 몇 개를 만들고 서버를 띄운다."""
     import tempfile
@@ -107,27 +118,27 @@ def _demo(args) -> None:
     base = Path(args.dir or tempfile.mkdtemp(prefix="ironlab-demo-"))
     s = load_settings(mock=True, data_dir=base / "data", users_root=base / "users",
                       shared_root=base / "shared", scratch_root=base / "scratch",
-                      monitor_interval_s=2.0, public_host="gpubox.tailnet.ts.net")
+                      monitor_interval_s=2.0, public_host="127.0.0.1", public_url=f"http://{args.host}:{args.port}")
     app = create_app(s)
     ctx = app.state.ctx
     tokens = {}
-    for name, role in (("cheolmin", "admin"), ("seoyeon", "user"), ("jihoon", "user")):
+    for name, role in (("admin", "admin"), ("seoyeon", "user"), ("jihoon", "user")):
         if ctx.db.get_user(name):
             tokens[name] = um.rotate_token(ctx.db, name)
         else:
             _, tokens[name] = um.create_user(ctx.db, s, name, role=role)
-    (s.users_root / "cheolmin" / "trellis-runs").mkdir(exist_ok=True)
-    (s.users_root / "cheolmin" / "README.txt").write_text("데모 파일입니다.\n")
+    (s.users_root / "admin" / "trellis-runs").mkdir(exist_ok=True)
+    (s.users_root / "admin" / "README.txt").write_text("데모 파일입니다.\n")
     (s.shared_root / "models" / "hub").mkdir(exist_ok=True)
 
-    for name in ("cheolmin", "seoyeon"):
+    for name in ("admin", "seoyeon"):
         ctx.rt.start_workspace(ctx.db.get_user(name))
     if not ctx.llm.model("qwen3.8-27b"):
         ctx.llm.register(name="qwen3.8-27b", file="qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
                          vram_gb=20, ctx=32768, parallel=2)
     for user, cmd, vram in (("seoyeon", "python gen.py --res 1536 && sleep 120", 20),
                             ("jihoon", "python trellis_batch.py && sleep 90", 10),
-                            ("cheolmin", "python pixal3d.py --low_vram && sleep 60", 8),
+                            ("admin", "python pixal3d.py --low_vram && sleep 60", 8),
                             ("jihoon", "python train_lora.py && sleep 200", 14)):
         ctx.sched.submit(ctx.db.get_user(user), name=cmd.split()[1], command=cmd, vram_gb=vram)
 
@@ -154,6 +165,10 @@ def main(argv: list[str] | None = None) -> None:
     ca.add_argument("name")
     ca.add_argument("--tailscale-login", help="예: you@github")
     ca.set_defaults(fn=_create_admin)
+
+    rt = sub.add_parser("reset-token", help="사용자의 접근 토큰 재발급")
+    rt.add_argument("name")
+    rt.set_defaults(fn=_reset_token)
 
     dm = sub.add_parser("demo", help="mock 데모 실행")
     dm.add_argument("--host", default="127.0.0.1")

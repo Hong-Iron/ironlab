@@ -157,7 +157,23 @@ function linkLabels(root = document) {
 new MutationObserver(() => linkLabels()).observe(document.body, { childList: true, subtree: true });
 
 async function copyText(text) {
-  try { await navigator.clipboard.writeText(text); toast("클립보드에 복사했습니다"); } catch { toast("복사하지 못했습니다. 직접 선택해 복사하세요", true); }
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      // LAN 설치처럼 http://IP 로 열면 브라우저가 클립보드 API 를 막는다. 예전 방식으로 복사한다
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      if (!ok) throw new Error("copy");
+    }
+    toast("클립보드에 복사했습니다");
+  } catch { toast("복사하지 못했습니다. 직접 선택해 복사하세요", true); }
 }
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-copy]");
@@ -230,6 +246,14 @@ const PAGES = {
 };
 
 // ═════════════════════════ 로그인·부팅 ═════════════════════════
+function applySite(site) {
+  const name = (site && site.name) || "ironlab";
+  document.querySelectorAll(".site-name").forEach((el) => { el.textContent = name; });
+  document.title = name === "ironlab" ? "ironlab console" : `${name} · ironlab`;
+  if (site && "tailscale" in site) $("#login-ts").classList.toggle("hidden", !site.tailscale);
+}
+fetch("/api/site").then((r) => (r.ok ? r.json() : null)).then(applySite).catch(() => {});
+
 function showLogin(msg = "") {
   clearInterval(S.timer);
   closeDrawer();
@@ -257,6 +281,7 @@ async function boot() {
     return;
   }
   S.me = await res.json();
+  applySite({ name: S.me.site_name });
   S.health = await api("/api/health").catch(() => ({}));
   $("#login").classList.add("hidden");
   $("#app").classList.remove("hidden");
@@ -892,7 +917,7 @@ const Workspace = {
       <dt>컨테이너</dt><dd class="mono">ironlab-ws-${esc(S.me.name)}</dd>
       <dt>CPU 할당</dt><dd>${w.limits.cpus}코어</dd>
       <dt>메모리 할당</dt><dd>${w.limits.mem_gb} GB</dd>
-      <dt>GPU</dt><dd>${esc(S.overview?.gpu.name || "RTX 3090")}, 다른 사용자와 공유</dd>`;
+      <dt>GPU</dt><dd>${esc(S.overview?.gpu.name || "GPU")}, 다른 사용자와 공유</dd>`;
     const u = S.overview?.users.find((x) => x.name === S.me.name);
     $("#ws-usage").innerHTML = u ? [
       ["CPU", `${u.cpu_cores.toFixed(1)} / ${u.cpu_limit} 코어`, pct(u.cpu_cores, u.cpu_limit)],
@@ -3640,7 +3665,7 @@ function tokenPanel(name, token) {
   $("#drawer-body").innerHTML = `<div class="callout warn">${icon("key")}<div>이 토큰은 지금 한 번만 보입니다. 창을 닫기 전에 ${esc(name)} 님에게 안전한 경로로 전달하세요.</div></div>
     <div class="field"><label>${esc(name)} 의 접근 토큰</label><div class="copy"><code>${esc(token)}</code><button class="btn sm" data-copy="${esc(token)}">복사</button></div></div>
     <div class="section-title">사용자에게 보낼 안내</div>
-    <div class="copy"><code style="white-space:pre-wrap">ironlab login --url https://${esc(S.me.public_host || "서버주소")} --token ${esc(token)}</code></div>`;
+    <div class="copy"><code style="white-space:pre-wrap">ironlab login --url ${esc(S.me.public_url || location.origin)} --token ${esc(token)}</code></div>`;
   $("#drawer-foot").innerHTML = `<button class="btn primary" data-drawer-close>완료</button>`;
   $("#drawer-foot [data-drawer-close]").onclick = () => closeDrawer();
 }

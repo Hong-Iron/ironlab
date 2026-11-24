@@ -604,7 +604,8 @@ class Monitor:
             alerts.append(gpu.get("error", "GPU를 찾을 수 없음"))
         else:
             used_gb = gpu["used_mb"] / 1024
-            if used_gb >= self.s.vram_alert_gb:
+            limit_gb = self.s.vram_alert_gb or (gpu.get("total_mb") or 0) / 1024 * 0.92
+            if limit_gb and used_gb >= limit_gb:
                 alerts.append(f"VRAM {used_gb:.1f}GB 사용 중 — OOM 위험")
             if (gpu.get("temp") or 0) >= 85:
                 alerts.append(f"GPU 온도 {gpu['temp']:.0f}°C")

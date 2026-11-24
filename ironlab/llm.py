@@ -111,10 +111,10 @@ class LLMService:
         self.db.log_event("llm.register", None, f"{name} ({f}, {vram_gb:g}GB)")
         return self.model(name)
 
-    @staticmethod
-    def _check_numbers(vram_gb: float, ctx: int, parallel: int) -> None:
-        if not (0 < vram_gb <= 24 * 4):
-            raise LLMError(f"VRAM 예약은 0보다 크고 96 GB 이하여야 합니다 (받은 값 {vram_gb:g} GB)")
+    def _check_numbers(self, vram_gb: float, ctx: int, parallel: int) -> None:
+        total = getattr(self.sched, "total_gb", 0) or 1024    # GPU 전체 용량보다 큰 예약은 결코 올라가지 못한다
+        if not (0 < vram_gb <= total):
+            raise LLMError(f"VRAM 예약은 0보다 크고 GPU 전체({total:g} GB) 이하여야 합니다 (받은 값 {vram_gb:g} GB)")
         if not (512 <= ctx <= 1_048_576):
             raise LLMError(f"컨텍스트는 512 ~ 1,048,576 토큰이어야 합니다 (받은 값 {ctx:,} 토큰)")
         if not (1 <= parallel <= 32):
@@ -421,7 +421,7 @@ class LLMService:
             last = " ".join(p.get("text", "") for p in last if isinstance(p, dict))
         reasoning = "질문을 정리하고 답을 구성합니다."
         text = (f"(mock 응답) {model} 입니다. '{str(last)[:60]}' 에 대해 답하면, 실제 서버에서는 "
-                "llama.cpp 가 RTX 3090 위에서 이 자리에 답을 스트리밍합니다.")
+                "llama.cpp 가 GPU 위에서 이 자리에 답을 스트리밍합니다.")
         usage = {"prompt_tokens": max(1, len(str(last)) // 2), "completion_tokens": len(text) // 2}
         usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
         cid = f"chatcmpl-mock{int(t0 * 1000)}"
