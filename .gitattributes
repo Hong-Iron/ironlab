@@ -1,0 +1,7 @@
+# 리눅스(WSL 포함)에서 도는 파일은 Windows 에서 받아도 줄 끝이 LF 여야 한다
+* text=auto eol=lf
+# Windows 에서만 도는 파일
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.glb binary

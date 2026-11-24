@@ -25,12 +25,12 @@ NVIDIA GPU 한 장을 여러 명이 같이 쓰는 서버를 위한 관리 도구
 
 | | |
 |---|---|
-| 운영체제 | Ubuntu 22.04 / 24.04, Debian 12, Arch Linux (다른 배포판은 아래 `SKIP_PACKAGES=1`) |
-| GPU | NVIDIA GPU 와 드라이버. `nvidia-smi` 가 GPU 를 보여야 합니다. 생성 화면의 기본값은 24GB 카드에 맞춰져 있습니다 ([GPU 가 다르면](#gpu-가-다르면)) |
+| 운영체제 | Ubuntu 22.04 / 24.04, Debian 12, Arch Linux (다른 배포판은 아래 `SKIP_PACKAGES=1`). **Windows 10 21H2 / 11** 은 [Windows](#windows) |
+| GPU | **NVIDIA**: 드라이버, `nvidia-smi` 가 GPU 를 보여야 합니다. **AMD**: 커널의 amdgpu 드라이버 (리눅스만, [AMD GPU](#amd-gpu)). 생성 화면의 기본값은 NVIDIA 24GB 카드에 맞춰져 있습니다 ([GPU 가 다르면](#gpu-가-다르면)) |
 | 디스크 | 이미지·모델에 수백 GB. 큰 디스크가 따로 있으면 `BIG=<마운트 위치>` |
 | 네트워크 | 사용자가 서버에 닿을 방법 하나: Tailscale, 같은 네트워크(LAN), 또는 HTTPS 리버스 프록시 |
 
-Docker, NVIDIA Container Toolkit, Python 3.12 는 설치 스크립트가 깝니다.
+Docker, NVIDIA Container Toolkit(NVIDIA 일 때), Python 3.12 는 설치 스크립트가 깝니다.
 
 ### 빠른 설치
 
@@ -50,7 +50,8 @@ sudo ADMIN=admin SITE_NAME="우리 연구실 GPU" bash deploy/install.sh
 | `TS_LOGIN=name@github` | (Tailscale) 관리자의 Tailscale 계정. 토큰 없이 들어옵니다 |
 | `PUBLIC_HOST=…` `PUBLIC_URL=…` | 사용자에게 안내할 서버 주소·콘솔 주소 (도메인이 있거나 프록시를 붙일 때) |
 | `PORT=8700` | 콘솔 포트 |
-| `GPU_INDEX=0` | GPU 가 여러 장이면 맡을 GPU 번호 (`nvidia-smi -L` 순서) |
+| `GPU_VENDOR=auto` | `nvidia`, `amd`, `auto` (찾아서 정함) |
+| `GPU_INDEX=0` | GPU 가 여러 장이면 맡을 GPU 번호 (`nvidia-smi -L` 순서, AMD 는 card 번호 순. AMD 에서 주지 않으면 VRAM 이 가장 큰 카드) |
 | `BIG=/data` | 큰 디스크. Docker·containerd·`/srv` 를 그 위에 bind mount 합니다 (기본: 옮기지 않음) |
 | `WITH_TRELLIS=1` | TRELLIS.2/Pixal3D 가 든 워크스페이스 이미지까지 빌드 (1시간 이상) |
 | `SKIP_PACKAGES=1` | 패키지 설치를 건너뜀. Docker(buildx)·NVIDIA Container Toolkit·curl·rsync·python3 를 직접 깔았을 때 |
@@ -97,7 +98,58 @@ sudo bash deploy/install.sh
 - **24GB 보다 작은 카드 (12·16GB):** 워크스페이스, 작업 큐, 로컬 LLM 은 그대로 씁니다. 생성 화면은 모델마다 예약 VRAM(`gen*_vram_gb`, 4~22GB)이 정해져 있고, 카드보다 큰 예약은 제출할 때 "VRAM은 … 이하여야 합니다" 로 거절됩니다. 그 생성기는 켜지 않거나, 모델이 실제로 들어가는 설정을 찾은 뒤 예약 값을 낮추세요.
 - **24GB 보다 큰 카드:** 바꿀 것이 없습니다. 여러 작업이 동시에 더 많이 돕니다.
 - **여러 장:** ironlab 은 `gpu_index` 한 장만 맡습니다. 컨테이너에도 그 한 장만 보입니다. 나머지 GPU 는 ironlab 밖에서 쓸 수 있습니다.
+- **CUDA 확장 빌드:** 워크스페이스 이미지는 카드의 compute capability(3090 8.6, 4090 8.9, H100 9.0, 5090 12.0)에 맞춘 `TORCH_CUDA_ARCH_LIST` 로 만들어집니다. 카드를 바꾸면 설치 스크립트를 다시 돌리세요.
 - **MIG·vGPU 없는 카드:** VRAM 을 하드웨어로 나눌 수 없어 아래의 예약 방식으로 나눕니다.
+
+### Windows
+
+ironlab 은 리눅스의 Docker·cgroup·systemd 위에서 돕니다. Windows 에서는 설치 스크립트가 ironlab 전용 **WSL2 배포판**(Ubuntu 24.04, 이름 `ironlab`)을 하나 만들고 그 안에서 위의 `deploy/install.sh` 를 돌립니다. 이미 쓰던 WSL 배포판이나 Docker Desktop 은 건드리지 않습니다.
+
+| | |
+|---|---|
+| Windows | Windows 11 (22H2 이상) 권장. Windows 10 21H2 이상은 Tailscale 로만 열 수 있습니다 |
+| GPU | **NVIDIA 만.** Windows 에 NVIDIA 드라이버만 깔면 됩니다 (WSL 안에 리눅스 드라이버를 깔지 마세요). Windows 의 AMD GPU 는 지원하지 않습니다 |
+| BIOS | 가상화(Intel VT-x / AMD SVM) 켜기 |
+
+저장소를 받고 (`git clone`, 또는 GitHub 의 Code > Download ZIP 을 풀고) **관리자 PowerShell** 에서:
+
+```powershell
+cd ironlab
+powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1 -Admin admin -SiteName "우리 연구실 GPU" -DisableSleep
+```
+
+옵션 없이 쓰려면 `deploy\windows\install.cmd` 를 두 번 누르면 됩니다 (관리자 이름만 묻습니다). WSL 이 처음이면 WSL 을 깔고 재부팅하라고 한 뒤 멈춥니다. 재부팅하고 같은 명령을 다시 실행하세요.
+
+| 옵션 | 뜻 |
+|---|---|
+| `-Access auto` | Windows 11 은 `lan` (mirrored 네트워크로 PC 의 IP 에 열림), Windows 10 은 `tailscale` (WSL 안에 Tailscale 을 깔고 로그인 주소를 띄움). `local` 도 됩니다 |
+| `-InstallDir D:\ironlab\wsl` | WSL 디스크(사용자 홈·모델·이미지가 모두 든 ext4.vhdx)를 둘 곳. 기본 `C:\ProgramData\ironlab\wsl`. 큰 드라이브를 고르세요 |
+| `-MemoryGB 48` | WSL 에 줄 메모리. 기본은 실메모리의 80% (`.wslconfig` 에 이미 값이 있으면 그대로) |
+| `-DisableSleep` | 전원이 연결돼 있을 때 절전을 끔. PC 가 잠들면 ironlab 도 멈춥니다 |
+| `-Admin` `-SiteName` `-TsLogin` `-PublicHost` `-PublicUrl` `-Port` `-GpuIndex` `-WithTrellis` | 리눅스 설치의 같은 이름 옵션과 같습니다 |
+
+스크립트가 하는 일: WSL 설치·업데이트 → `%UserProfile%\.wslconfig` 에 메모리·CPU·네트워크 방식 → Ubuntu 공식 WSL 이미지를 받아 SHA256 을 확인하고 등록 → systemd 켜기 → 소스를 `/opt/ironlab-src` 로 복사(줄 끝 CRLF 는 LF 로) → `install.sh` → 방화벽(Windows 방화벽과 Hyper-V 방화벽에 TCP 8700, 22001~22999, 개인·도메인 네트워크만) → 부팅·로그인 때 WSL 을 깨우는 예약 작업 `ironlab WSL`.
+
+Windows 에서 다른 점:
+
+- **업데이트:** `git pull`(또는 새 ZIP) 뒤 같은 명령. 설정·사용자·파일은 그대로입니다.
+- **프로세스별 VRAM:** WSL 의 드라이버는 어떤 프로세스가 GPU 를 얼마나 쓰는지 알려 주지 않습니다. 그래서 대시보드에 사용자별 VRAM 이 나오지 않고, 큐는 실행 중인 작업이 예약만큼 쓴다고 보고 계산합니다. 선언보다 많이 쓰는 작업을 찾아 경고·종료하는 기능(`vram_overuse_action`)도 동작하지 않습니다.
+- **화면 출력:** Windows 화면이 쓰는 VRAM(보통 0.5~2GB)도 GPU 사용량에 들어가 큐의 여유가 그만큼 줄어듭니다.
+- **WSL 은 Windows 사용자별입니다.** 설치한 계정의 WSL 에 들어가고, 예약 작업도 그 계정으로 돕니다. 재부팅 뒤 콘솔이 안 뜨면 그 계정으로 한 번 로그인하거나 `wsl -d ironlab` 을 실행해 보세요.
+- **안으로 들어가기:** `wsl -d ironlab` (root 셸), 로그는 `wsl -d ironlab -e journalctl -u ironlab -f`.
+- **지우기:** `powershell -ExecutionPolicy Bypass -File deploy\windows\uninstall.ps1`. 예약 작업·방화벽 규칙을 지우고, 배포판 이름을 입력하면 배포판(안의 모든 데이터)까지 지웁니다. `-KeepDistro` 면 배포판은 남깁니다.
+
+### AMD GPU
+
+리눅스에서 Radeon·Instinct 카드를 씁니다. 호스트에는 커널의 amdgpu 드라이버만 있으면 되고 ROCm 은 깔지 않아도 됩니다 (`/dev/kfd` 와 `/dev/dri/renderD*` 가 있으면 됩니다). 설치 명령은 같습니다. 스크립트가 AMD 카드를 찾으면:
+
+- 워크스페이스 이미지를 ROCm 개발 이미지(`rocm/dev-ubuntu-22.04:6.4.4`, `ROCM_IMAGE` 로 바꿈) 위에 만듭니다. `hipcc`, `rocm-smi`, `rocminfo` 가 들어 있고, PyTorch 는 각자 ROCm 판을 깝니다 (`pip install torch --index-url https://download.pytorch.org/whl/rocm6.4`).
+- 컨테이너에는 `/dev/kfd` 와 그 카드의 render 노드 하나만 붙입니다. ROCm 은 render 노드가 보이는 카드만 쓰므로 여러 장이어도 한 장만 보입니다. 장치 파일의 그룹(render·video)도 컨테이너와 SSH 세션에 넣어 줍니다.
+- 로컬 LLM 은 `llama.cpp:server-rocm` 이미지를 씁니다. ROCm 이 안 도는 카드는 설정의 `llm_image` 를 `ghcr.io/ggml-org/llama.cpp:server-vulkan` 으로 바꾸세요.
+- 모니터링은 sysfs(`mem_info_vram_*`, `gpu_busy_percent`, hwmon)와 `/proc/<pid>/fdinfo` 로 합니다. 프로세스별 VRAM 은 커널 5.17 이상에서 나옵니다.
+- **공식 지원 밖 카드:** ROCm 이 공식으로 지원하지 않는 같은 세대 카드(RX 6700·6600 은 gfx1031~1036, RX 7600 은 gfx1102)는 `HSA_OVERRIDE_GFX_VERSION` 을 줘야 돕니다. 스크립트가 카드의 gfx 판을 읽어 `rocm_gfx_override` 를 채웁니다. 그 밖의 카드는 [ROCm 지원 목록](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/reference/system-requirements.html)을 보세요.
+- **안 되는 것:** 생성 화면(그림·3D·음악·영상·음성·효과음)의 실행 스크립트와 TRELLIS 이미지는 CUDA 전용이라 AMD 에서는 켜지 않습니다. 워크스페이스, 작업 큐, 모니터링, 파일, 로컬 LLM 은 같습니다.
+- Windows 의 AMD GPU 는 지원하지 않습니다 (WSL2 의 Docker 컨테이너에 Radeon 을 넘기는 표준 방법이 없습니다).
 
 ### 손으로 설치하기
 
@@ -641,7 +693,7 @@ ironlab top                                   # 실시간 현황
 
 ## 설정
 
-`deploy/config.example.toml` 참고. 모든 항목은 `IRONLAB_<대문자>` 환경변수로 덮어쓸 수 있습니다. 서버마다 자주 바꾸는 값은 `site_name`(화면 이름), `public_host`·`public_url`(안내 주소), `gpu_index`, `default_cpus`·`default_mem_gb`·`default_disk_gb`(새 사용자 기본 한도), `max_running_jobs_per_user`, `idle_stop_hours`(유휴 워크스페이스 자동 중지)입니다. Prometheus는 `/metrics` (로컬 또는 관리자 토큰)를 긁어가면 사용자별 메트릭이 남습니다.
+`deploy/config.example.toml` 참고. 모든 항목은 `IRONLAB_<대문자>` 환경변수로 덮어쓸 수 있습니다. 서버마다 자주 바꾸는 값은 `site_name`(화면 이름), `public_host`·`public_url`(안내 주소), `gpu_vendor`·`gpu_index`·`rocm_gfx_override`, `default_cpus`·`default_mem_gb`·`default_disk_gb`(새 사용자 기본 한도), `max_running_jobs_per_user`, `idle_stop_hours`(유휴 워크스페이스 자동 중지)입니다. Prometheus는 `/metrics` (로컬 또는 관리자 토큰)를 긁어가면 사용자별 메트릭이 남습니다.
 
 ## 개발
 

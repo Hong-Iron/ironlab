@@ -26,4 +26,17 @@ jobs:
       - name: 문법 검사
         run: for f in deploy/*.sh deploy/*/*.sh; do bash -n "$f"; done
       - name: shellcheck (설치 스크립트)
-        run: shellcheck -S error deploy/install.sh deploy/install-arch.sh deploy/shared-apps.sh
+        run: shellcheck -S warning deploy/install.sh deploy/install-arch.sh deploy/workspace/entrypoint.sh && shellcheck -S error deploy/shared-apps.sh
+      - name: PowerShell 구문 검사 (Windows 설치)
+        shell: pwsh
+        run: |
+          $bad = 0
+          foreach ($f in Get-ChildItem deploy/windows/*.ps1) {
+            $t = $null; $e = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$t, [ref]$e) | Out-Null
+            foreach ($x in $e) { Write-Host "$($f.Name):$($x.Extent.StartLineNumber) $($x.Message)"; $bad++ }
+            # Windows PowerShell 5.1 은 BOM 없는 UTF-8 의 한글을 깨뜨린다
+            $b = [IO.File]::ReadAllBytes($f.FullName)
+            if (-not ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)) { Write-Host "$($f.Name): UTF-8 BOM 없음"; $bad++ }
+          }
+          if ($bad) { exit 1 }
