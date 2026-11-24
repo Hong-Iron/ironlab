@@ -6,11 +6,12 @@
 
 if [ -z "${IRONLAB_PROFILE:-}" ]; then
     export IRONLAB_PROFILE=1
-    export CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST=8.6
     export HF_HUB_CACHE=/shared/models/hub TORCH_HOME=/shared/models/torch
+    # GPU 종류별 경로 (CUDA_HOME·TORCH_CUDA_ARCH_LIST 또는 ROCM_PATH. 이미지를 만들 때 정해진다)
+    [ -r /etc/ironlab-gpu.sh ] && . /etc/ironlab-gpu.sh
     # 컨테이너 환경변수 (HF 캐시, 로컬 LLM 주소 등. 진입 스크립트가 만든다)
     [ -r /etc/ironlab-env.sh ] && . /etc/ironlab-env.sh
-    PATH="$HOME/.local/bin:/opt/conda/bin:/usr/local/cuda/bin:$PATH"
+    PATH="$HOME/.local/bin:/opt/conda/bin:$PATH"
     export PATH
 fi
 

@@ -45,7 +45,9 @@ class Settings:
     default_disk_gb: int = 200
 
     # GPU 스케줄링
-    gpu_index: int = 0                # 관리할 GPU 번호 (nvidia-smi 순서). 컨테이너에는 이 GPU 한 장만 보인다
+    gpu_vendor: str = "auto"          # nvidia | amd | auto (이 기계에서 찾는다)
+    gpu_index: int = 0                # 관리할 GPU 번호 (nvidia-smi 순서, AMD 는 /sys/class/drm/card 번호 순). 컨테이너에는 이 한 장만 보인다
+    rocm_gfx_override: str = ""       # AMD: ROCm 이 공식 지원하지 않는 카드에 HSA_OVERRIDE_GFX_VERSION 으로 넘길 값 (예: RX 6000 계열 10.3.0)
     gpu_total_vram_gb: float = 0.0    # 0이면 NVML에서 자동 감지 (mock은 24)
     vram_reserve_gb: float = 1.0      # 항상 남겨둘 여유분
     max_running_jobs_per_user: int = 1
@@ -53,7 +55,7 @@ class Settings:
     vram_overuse_action: str = "warn"  # warn | kill — 선언보다 많이 쓰는 작업 처리
 
     # 로컬 LLM (llama.cpp 서버, 모두가 공유하는 인스턴스 하나)
-    llm_image: str = "ghcr.io/ggml-org/llama.cpp:server-cuda"
+    llm_image: str = ""               # 비우면 GPU 에 맞게: NVIDIA server-cuda, AMD server-rocm (ghcr.io/ggml-org/llama.cpp)
     llm_port: int = 8800              # llama-server 를 127.0.0.1 의 이 포트로만 연다
     llm_idle_unload_min: float = 20.0  # 이만큼 안 쓰면 자동으로 내려 GPU 를 돌려준다 (0이면 끔)
     network_name: str = "ironlab"     # 워크스페이스·작업 컨테이너용 Docker 네트워크
@@ -111,6 +113,11 @@ class Settings:
     history_points: int = 360         # 10초 × 360 = 1시간
     idle_stop_hours: float = 12.0     # 0이면 비활성
     vram_alert_gb: float = 0.0       # 이만큼 넘게 쓰면 알림. 0이면 GPU 용량의 92% (24GB 카드면 약 22GB)
+
+    def llm_image_for(self, vendor: str) -> str:
+        if self.llm_image:
+            return self.llm_image
+        return "ghcr.io/ggml-org/llama.cpp:" + ("server-rocm" if vendor == "amd" else "server-cuda")
 
     @property
     def console_url(self) -> str:

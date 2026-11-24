@@ -17,12 +17,25 @@ if ! id -u "$USER_NAME" >/dev/null 2>&1; then
     usermod -p '*' "$USER_NAME"
 fi
 
+# AMD GPU: /dev/kfd·/dev/dri/renderD* 는 그 장치 파일의 그룹(render, video)에 들어 있어야 열린다.
+# 작업 컨테이너는 Docker 의 group_add 로 되지만, SSH 세션은 /etc/group 을 따르므로 여기서 넣는다.
+GPU_GIDS="${IRONLAB_GPU_GIDS:-}"
+for gid in ${GPU_GIDS//,/ }; do
+    [[ "$gid" =~ ^[0-9]+$ ]] || continue
+    grp=$(getent group "$gid" | cut -d: -f1 || true)
+    if [[ -z "$grp" ]]; then
+        grp="gpu$gid"
+        groupadd -g "$gid" "$grp" || { echo "ironlab-entrypoint: GPU 그룹 $gid 을 만들지 못했습니다" >&2; continue; }
+    fi
+    usermod -aG "$grp" "$USER_NAME" || echo "ironlab-entrypoint: $USER_NAME 을 GPU 그룹 $grp 에 넣지 못했습니다" >&2
+done
+
 # SSH 세션에도 컨테이너 환경변수(HF 캐시, 로컬 LLM 주소, CUDA 라이브러리 경로 등)가 보이게 파일로 남긴다.
 # /etc/ironlab-profile.sh 가 읽는다. 부가 기능이므로 실패해도 sshd 는 띄운다.
 {
     while IFS='=' read -r -d '' key value; do
         case "$key" in
-            IRONLAB_*|HF_*|TORCH_HOME|NVIDIA_*|CUDA_*|OPENAI_*|LD_LIBRARY_PATH|LIBRARY_PATH)
+            IRONLAB_*|HF_*|TORCH_HOME|NVIDIA_*|CUDA_*|HSA_*|HIP_*|ROCM_*|ROCR_*|OPENAI_*|LD_LIBRARY_PATH|LIBRARY_PATH)
                 printf 'export %s=%q\n' "$key" "$value" ;;
         esac
     done < /proc/self/environ > /etc/ironlab-env.sh

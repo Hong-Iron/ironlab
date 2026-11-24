@@ -344,7 +344,8 @@ class Monitor:
                     self._complain("llm", "llm tick failed")
             hold = None if gpu.get("available") else "GPU 상태를 읽을 수 없어 새 작업을 시작하지 않습니다"
             try:
-                self.sched.tick(gpu.get("used_mb", 0) / 1024, actual_job_gb, llm_reserve, hold=hold)
+                self.sched.tick(gpu.get("used_mb", 0) / 1024, actual_job_gb, llm_reserve, hold=hold,
+                                per_process=gpu.get("per_process", True))
             except Exception:
                 # 큐 처리가 실패해도 화면에 보일 수치는 계속 갱신한다. 다음 주기에 다시 시도한다
                 self._complain("sched", "scheduler tick failed")

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# ironlab 설치 스크립트 (Ubuntu / Debian / Arch Linux)
+# ironlab 설치 스크립트 (Ubuntu / Debian / Arch Linux, Windows 의 WSL2 Ubuntu)
 #
 #   sudo ADMIN=admin bash deploy/install.sh
 #
-# 미리 되어 있어야 하는 것: NVIDIA 드라이버 (nvidia-smi 가 GPU 를 보여야 한다)
+# 미리 되어 있어야 하는 것: GPU 드라이버
+#   NVIDIA  nvidia-smi 가 GPU 를 보여야 한다 (WSL2 는 Windows 에 깐 드라이버가 넘겨준다)
+#   AMD     커널의 amdgpu 드라이버 (/dev/kfd, /dev/dri/renderD*). 호스트에 ROCm 은 없어도 된다
+# Windows 는 deploy/windows/install.ps1 이 WSL2 를 준비한 뒤 이 스크립트를 부른다.
 #
 # 환경변수 (모두 선택)
 #   ADMIN=이름          처음 만들 관리자 (소문자로 시작, 영문·숫자·-·_). 접근 토큰이 화면에 한 번 나온다
@@ -17,7 +20,10 @@
 #   PUBLIC_HOST=…       사용자에게 안내할 서버 주소 (lan/local 기본: 서버 IP). 도메인이 있으면 그 이름
 #   PUBLIC_URL=…        사용자에게 안내할 콘솔 주소 (local 에서 프록시 주소, 예: https://gpu.example.ac.kr)
 #   PORT=8700           콘솔(API) 포트
-#   GPU_INDEX=0         GPU 가 여러 장이면 ironlab 이 맡을 GPU 번호 (nvidia-smi 순서)
+#   GPU_VENDOR=auto     nvidia | amd | auto (이 기계에서 찾는다)
+#   GPU_INDEX=0         GPU 가 여러 장이면 ironlab 이 맡을 GPU 번호 (nvidia-smi 순서, AMD 는 card 번호 순.
+#                       AMD 에서 주지 않으면 VRAM 이 가장 큰 카드)
+#   ROCM_IMAGE=…        (AMD) 워크스페이스 이미지의 바탕 (기본 rocm/dev-ubuntu-22.04:6.4.4)
 #   BIG=/data           큰 디스크의 마운트 위치. Docker·containerd·/srv 를 그 위에 둔다 (기본: 옮기지 않음)
 #   WITH_TRELLIS=1      TRELLIS.2/Pixal3D 이미지까지 빌드 (1시간 이상 걸림)
 #   SKIP_PACKAGES=1     패키지 설치를 건너뜀 (Docker·NVIDIA Container Toolkit 을 직접 깔았거나 다른 배포판일 때)
@@ -31,7 +37,10 @@ PREFIX=/opt/ironlab
 CONF=/etc/ironlab/config.toml
 ACCESS="${ACCESS:-auto}"
 PORT="${PORT:-8700}"
+GPU_INDEX_GIVEN="${GPU_INDEX:+1}"
 GPU_INDEX="${GPU_INDEX:-0}"
+GPU_VENDOR="${GPU_VENDOR:-auto}"
+ROCM_IMAGE="${ROCM_IMAGE:-rocm/dev-ubuntu-22.04:6.4.4}"
 BIG="${BIG:-}"
 
 step() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
@@ -43,6 +52,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 [[ $EUID -eq 0 ]] || die "sudo 로 실행하세요: sudo bash $0"
 [[ -f "$SRC_DIR/pyproject.toml" ]] || die "ironlab 소스 폴더에서 실행하세요 ($SRC_DIR)"
 case "$ACCESS" in auto|tailscale|lan|local) ;; *) die "ACCESS 는 auto, tailscale, lan, local 중 하나입니다 (받은 값: $ACCESS)" ;; esac
+case "$GPU_VENDOR" in auto|nvidia|amd) ;; *) die "GPU_VENDOR 는 auto, nvidia, amd 중 하나입니다 (받은 값: $GPU_VENDOR)" ;; esac
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "PORT 는 숫자여야 합니다 (받은 값: $PORT)"
 [[ "$GPU_INDEX" =~ ^[0-9]+$ ]] || die "GPU_INDEX 는 0 이상의 숫자여야 합니다 (받은 값: $GPU_INDEX)"
 if [[ -n "${ADMIN:-}" && ! "$ADMIN" =~ ^[a-z][a-z0-9_-]{1,31}$ ]]; then
@@ -50,16 +60,95 @@ if [[ -n "${ADMIN:-}" && ! "$ADMIN" =~ ^[a-z][a-z0-9_-]{1,31}$ ]]; then
 fi
 
 # ───────────────────────────────────────────────
-step "1/10 GPU 드라이버 확인"
-have nvidia-smi || die "nvidia-smi 가 없습니다. NVIDIA 드라이버를 먼저 설치하세요.
+step "1/10 GPU 확인"
+IS_WSL=0
+grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null && IS_WSL=1
+# WSL2 의 NVIDIA 도구(nvidia-smi, libnvidia-ml)는 Windows 드라이버가 /usr/lib/wsl/lib 에 넣어 준다
+[[ -d /usr/lib/wsl/lib ]] && export PATH="/usr/lib/wsl/lib:$PATH"
+if (( IS_WSL )); then
+    ok "Windows WSL2 안 ($(uname -r))"
+    [[ "$(ps -p 1 -o comm= 2>/dev/null)" == systemd ]] || die "WSL 에서 systemd 가 꺼져 있습니다. /etc/wsl.conf 에
+    [boot]
+    systemd=true
+    를 넣고 Windows 에서 'wsl --shutdown' 뒤 다시 실행하세요 (deploy/windows/install.ps1 이 이 일을 합니다)."
+fi
+
+amd_cards() {   # amdgpu 가 잡은 카드를 "card번호 render노드 VRAM바이트" 줄로, card 번호 순 (ironlab/gpu.py 의 amd_cards 와 같은 순서)
+    local d n dev render
+    for d in /sys/class/drm/card*; do
+        n=${d##*/card}
+        [[ "$n" =~ ^[0-9]+$ ]] || continue
+        dev="$d/device"
+        [[ "$(cat "$dev/vendor" 2>/dev/null)" == 0x1002 && -r "$dev/mem_info_vram_total" ]] || continue
+        render=$(find "$dev/drm" -maxdepth 1 -name 'renderD*' -printf '%f\n' 2>/dev/null | sort | head -1 || true)
+        echo "$n ${render:--} $(cat "$dev/mem_info_vram_total")"
+    done | sort -n
+}
+
+if [[ "$GPU_VENDOR" == auto ]]; then
+    if have nvidia-smi && nvidia-smi -L >/dev/null 2>&1; then
+        GPU_VENDOR=nvidia
+    elif [[ -n "$(amd_cards)" ]]; then
+        GPU_VENDOR=amd
+    else
+        die "GPU 를 찾지 못했습니다. 드라이버를 먼저 설치하고 재부팅하세요.
+    NVIDIA  Ubuntu: sudo ubuntu-drivers install / Debian: https://wiki.debian.org/NvidiaGraphicsDrivers / Arch: sudo pacman -S nvidia-open
+            Windows(WSL2): Windows 에 NVIDIA 드라이버만 깔면 됩니다 (WSL 안에 리눅스 드라이버를 깔지 마세요)
+    AMD     커널에 든 amdgpu 드라이버가 카드를 잡아야 합니다 (ls /sys/class/drm, ls -l /dev/kfd)"
+    fi
+fi
+
+CUDA_ARCH=""; RENDER=""; GFX_OVERRIDE=""
+if [[ "$GPU_VENDOR" == nvidia ]]; then
+    have nvidia-smi || die "nvidia-smi 가 없습니다. NVIDIA 드라이버를 먼저 설치하세요.
     Ubuntu:  sudo ubuntu-drivers install   (그 뒤 재부팅)
     Debian:  https://wiki.debian.org/NvidiaGraphicsDrivers
-    Arch:    sudo pacman -S nvidia-open   (또는 nvidia, 카드에 맞게. 그 뒤 재부팅)"
-nvidia-smi -L >/dev/null 2>&1 || die "nvidia-smi 가 GPU 를 읽지 못했습니다. 드라이버를 설치한 뒤 재부팅했는지 확인하세요."
-GPU_COUNT=$(nvidia-smi -L | grep -c '^GPU ')
-(( GPU_INDEX < GPU_COUNT )) || die "GPU_INDEX=$GPU_INDEX 인데 GPU 는 ${GPU_COUNT}장입니다 (0 ~ $((GPU_COUNT - 1)))"
-GPU_LINE=$(nvidia-smi -L | sed -n "$((GPU_INDEX + 1))p")
-ok "$GPU_LINE"
+    Arch:    sudo pacman -S nvidia-open   (또는 nvidia, 카드에 맞게. 그 뒤 재부팅)
+    WSL2:    Windows 에 NVIDIA 드라이버를 깔고 'wsl --shutdown' 뒤 다시"
+    nvidia-smi -L >/dev/null 2>&1 || die "nvidia-smi 가 GPU 를 읽지 못했습니다. 드라이버를 설치한 뒤 재부팅했는지 확인하세요."
+    GPU_COUNT=$(nvidia-smi -L | grep -c '^GPU ')
+    (( GPU_INDEX < GPU_COUNT )) || die "GPU_INDEX=$GPU_INDEX 인데 GPU 는 ${GPU_COUNT}장입니다 (0 ~ $((GPU_COUNT - 1)))"
+    GPU_LINE=$(nvidia-smi -L | sed -n "$((GPU_INDEX + 1))p")
+    # CUDA 확장을 이 카드 세대에 맞춰 빌드하도록 (3090 8.6, 4090 8.9, H100 9.0, 5090 12.0)
+    CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader -i "$GPU_INDEX" 2>/dev/null | tr -d ' \r' || true)
+    [[ "$CUDA_ARCH" =~ ^[0-9]+\.[0-9]+$ ]] || { warn "GPU 세대(compute capability)를 읽지 못해 8.6 으로 둡니다"; CUDA_ARCH=8.6; }
+    ok "$GPU_LINE (compute capability $CUDA_ARCH)"
+else
+    (( IS_WSL )) && die "WSL2 에서는 AMD GPU 를 지원하지 않습니다 (Docker 컨테이너에 Radeon 을 넘기는 표준 방법이 없습니다).
+    AMD 카드는 Ubuntu 를 직접 깐 PC 에서 이 스크립트를 쓰세요."
+    mapfile -t AMD_LIST < <(amd_cards)
+    GPU_COUNT=${#AMD_LIST[@]}
+    (( GPU_COUNT > 0 )) || die "amdgpu 드라이버가 잡은 GPU 가 없습니다 (/sys/class/drm/card*/device/vendor 가 0x1002 인 것)."
+    if [[ -z "$GPU_INDEX_GIVEN" ]]; then
+        # 내장 그래픽(APU)이 card0 인 PC 가 많아, 고르지 않았으면 VRAM 이 가장 큰 카드를 맡는다
+        best=0
+        for i in "${!AMD_LIST[@]}"; do
+            (( ${AMD_LIST[i]##* } > ${AMD_LIST[best]##* } )) && best=$i
+        done
+        GPU_INDEX=$best
+    fi
+    (( GPU_INDEX < GPU_COUNT )) || die "GPU_INDEX=$GPU_INDEX 인데 AMD GPU 는 ${GPU_COUNT}장입니다 (0 ~ $((GPU_COUNT - 1)))"
+    read -r CARD_N RENDER VRAM_B <<< "${AMD_LIST[GPU_INDEX]}"
+    [[ "$RENDER" != - && -e "/dev/dri/$RENDER" ]] || die "card$CARD_N 의 render 노드(/dev/dri/renderD*)가 없습니다."
+    [[ -e /dev/kfd ]] || die "/dev/kfd 가 없습니다. amdgpu 의 연산 기능(KFD)이 켜진 커널이 필요합니다 (Ubuntu·Arch 기본 커널은 켜져 있습니다)."
+    GPU_LINE="AMD GPU card$CARD_N, VRAM $(( (VRAM_B + 2**29) / 2**30 )) GB, /dev/dri/$RENDER"
+    # ROCm 이 공식 지원하지 않는 같은 세대 카드는 가까운 지원 카드인 척해야 돈다 (HSA_OVERRIDE_GFX_VERSION)
+    RMINOR=$(stat -c %T "/dev/dri/$RENDER" 2>/dev/null || true)
+    RMINOR=$(( 16#${RMINOR:-0} ))
+    for props in /sys/class/kfd/kfd/topology/nodes/*/properties; do
+        [[ -r "$props" ]] || continue
+        grep -qx "drm_render_minor $RMINOR" "$props" || continue
+        GFXV=$(awk '$1 == "gfx_target_version" {print $2}' "$props")
+        [[ "$GFXV" =~ ^[0-9]+$ ]] || continue
+        major=$(( GFXV / 10000 )); minor=$(( GFXV / 100 % 100 )); stepping=$(( GFXV % 100 ))
+        GPU_LINE="$GPU_LINE, gfx$major$(printf '%x' "$minor")$(printf '%x' "$stepping")"
+        if (( major == 10 && minor == 3 && stepping != 0 )); then GFX_OVERRIDE=10.3.0       # RX 6700·6600 등
+        elif (( major == 11 && minor == 0 && stepping >= 2 )); then GFX_OVERRIDE=11.0.0     # RX 7600 등
+        fi
+    done
+    ok "$GPU_LINE"
+    [[ -n "$GFX_OVERRIDE" ]] && warn "ROCm 공식 지원 밖의 카드라 HSA_OVERRIDE_GFX_VERSION=$GFX_OVERRIDE 로 돌립니다 (설정의 rocm_gfx_override)."
+fi
 (( GPU_COUNT > 1 )) && warn "GPU 가 ${GPU_COUNT}장입니다. ironlab 은 GPU $GPU_INDEX 한 장만 맡고, 컨테이너에도 그 한 장만 보입니다."
 
 # ───────────────────────────────────────────────
@@ -105,7 +194,9 @@ apt_repo_nvidia() {
 if [[ "${SKIP_PACKAGES:-0}" == 1 ]]; then
     warn "패키지 설치를 건너뜀 (SKIP_PACKAGES=1)"
 elif have pacman; then
-    pacman -S --needed --noconfirm docker docker-buildx nvidia-container-toolkit python rsync curl uv
+    PKGS=(docker docker-buildx python rsync curl uv)
+    [[ "$GPU_VENDOR" == nvidia ]] && PKGS+=(nvidia-container-toolkit)
+    pacman -S --needed --noconfirm "${PKGS[@]}"
     UV="$(command -v uv)"
 elif have apt-get; then
     export DEBIAN_FRONTEND=noninteractive
@@ -113,23 +204,25 @@ elif have apt-get; then
     apt-get install -y -qq ca-certificates curl gnupg rsync python3 >/dev/null
     NEED_UPDATE=0
     if ! have docker; then apt_repo_docker; NEED_UPDATE=1; fi
-    if ! have nvidia-ctk; then apt_repo_nvidia; NEED_UPDATE=1; fi
+    if [[ "$GPU_VENDOR" == nvidia ]] && ! have nvidia-ctk; then apt_repo_nvidia; NEED_UPDATE=1; fi
     (( NEED_UPDATE )) && apt-get update -qq
     have docker || apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin >/dev/null
-    have nvidia-ctk || apt-get install -y -qq nvidia-container-toolkit >/dev/null
+    [[ "$GPU_VENDOR" != nvidia ]] || have nvidia-ctk || apt-get install -y -qq nvidia-container-toolkit >/dev/null
     if ! docker buildx version >/dev/null 2>&1; then
         apt-get install -y -qq docker-buildx-plugin >/dev/null 2>&1 || apt-get install -y -qq docker-buildx >/dev/null 2>&1 \
             || warn "docker buildx 를 설치하지 못했습니다. 이미지 빌드가 예전 방식으로 돕니다 (동작은 같음)."
     fi
 else
     die "이 배포판($OS_ID)은 패키지 설치를 자동으로 하지 못합니다. 아래를 직접 설치한 뒤 SKIP_PACKAGES=1 로 다시 실행하세요.
-    Docker (buildx 포함), NVIDIA Container Toolkit (nvidia-ctk), curl, rsync, python3
+    Docker (buildx 포함), curl, rsync, python3, (NVIDIA 만) NVIDIA Container Toolkit (nvidia-ctk)
     https://docs.docker.com/engine/install/
     https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
 fi
-for c in docker nvidia-ctk curl rsync python3; do have "$c" || die "$c 가 없습니다. 설치한 뒤 다시 실행하세요."; done
+NEED_CMDS=(docker curl rsync python3)
+[[ "$GPU_VENDOR" == nvidia ]] && NEED_CMDS+=(nvidia-ctk)
+for c in "${NEED_CMDS[@]}"; do have "$c" || die "$c 가 없습니다. 설치한 뒤 다시 실행하세요."; done
 install_uv
-ok "Docker $(docker --version | awk '{print $3}' | tr -d ,), nvidia-ctk, uv"
+ok "Docker $(docker --version | awk '{print $3}' | tr -d ,)$([[ "$GPU_VENDOR" == nvidia ]] && echo ', nvidia-ctk'), uv"
 
 # ───────────────────────────────────────────────
 step "3/10 저장 위치"
@@ -151,6 +244,10 @@ bind_dir() {
     mount "$dst"
     ok "$dst → $src"
 }
+if [[ -n "$BIG" ]] && (( IS_WSL )); then
+    warn "WSL 에서는 BIG 을 쓰지 않습니다. 큰 디스크에 두려면 Windows 설치 스크립트의 -InstallDir 로 WSL 디스크 자체를 그 드라이브에 둡니다."
+    BIG=""
+fi
 if [[ -n "$BIG" ]]; then
     [[ -d "$BIG" ]] || die "BIG=$BIG 폴더가 없습니다"
     # Docker 를 멈추면 실행 중인 워크스페이스·작업·LLM 이 모두 죽는다. 아직 연결하지 않은 위치가 있을 때만 멈춘다.
@@ -168,7 +265,7 @@ else
 fi
 
 # ───────────────────────────────────────────────
-step "4/10 Docker + NVIDIA 런타임"
+step "4/10 Docker + GPU 런타임"
 mkdir -p /etc/docker
 # 설정 내용이 실제로 바뀌었는지 보려고, 형식 차이를 없앤 지문을 떠 둔다
 daemon_fp() { python3 -c 'import json,sys; print(json.dumps(json.load(open("/etc/docker/daemon.json")), sort_keys=True))' 2>/dev/null || echo none; }
@@ -184,11 +281,18 @@ if d.pop("data-root", None):
 json.dump(d, open(p, "w"), indent=4)
 EOF
 fi
-nvidia-ctk runtime configure --runtime=docker >/dev/null
-mkdir -p /etc/cdi
-nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml >/dev/null 2>&1 || warn "CDI 정의 생성 실패 (계속 진행)"
+if [[ "$GPU_VENDOR" == nvidia ]]; then
+    nvidia-ctk runtime configure --runtime=docker >/dev/null
+    mkdir -p /etc/cdi
+    nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml >/dev/null 2>&1 || warn "CDI 정의 생성 실패 (계속 진행)"
+fi
 systemctl cat containerd.service >/dev/null 2>&1 && systemctl enable --now containerd
 systemctl enable --now docker
+# Windows 의 Docker Desktop 이 이 배포판에 붙어 있으면 docker 명령이 그쪽 엔진을 부른다. 그 엔진에는 GPU 설정을 할 수 없다
+if (( IS_WSL )) && docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
+    die "docker 가 Windows 의 Docker Desktop 엔진을 쓰고 있습니다. Docker Desktop > Settings > Resources > WSL integration 에서
+    이 배포판을 끄고 다시 실행하세요. ironlab 은 WSL 안에 따로 Docker 엔진을 둡니다."
+fi
 # 다시 시작하면 실행 중인 컨테이너가 모두 죽으므로, Docker 설정이 바뀌었을 때만 한다
 if [[ "$DAEMON_BEFORE" != "$(daemon_fp)" ]]; then
     RUNNING=$(docker ps -q 2>/dev/null | wc -l || true)
@@ -198,10 +302,20 @@ if [[ "$DAEMON_BEFORE" != "$(daemon_fp)" ]]; then
 else
     ok "Docker 설정 변화 없음 (다시 시작하지 않음, 실행 중인 컨테이너 유지)"
 fi
-if docker run --rm --gpus "device=$GPU_INDEX" nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi -L; then
-    ok "컨테이너에서 GPU 확인"
+if [[ "$GPU_VENDOR" == nvidia ]]; then
+    if docker run --rm --gpus "device=$GPU_INDEX" nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi -L; then
+        ok "컨테이너에서 GPU 확인"
+    else
+        die "컨테이너에서 GPU가 보이지 않습니다. 'nvidia-smi' 와 'nvidia-ctk cdi list' 출력을 확인하세요."
+    fi
 else
-    die "컨테이너에서 GPU가 보이지 않습니다. 'nvidia-smi' 와 'nvidia-ctk cdi list' 출력을 확인하세요."
+    # AMD 는 런타임 설정이 따로 없다. 장치 파일 두 개를 넘기면 된다 (ROCm 은 7단계에서 이미지 안의 rocminfo 로 확인)
+    if docker run --rm --device /dev/kfd --device "/dev/dri/$RENDER" ubuntu:22.04 \
+            sh -c "test -c /dev/kfd && test -c /dev/dri/$RENDER"; then
+        ok "컨테이너에 /dev/kfd, /dev/dri/$RENDER 가 붙음"
+    else
+        die "컨테이너에 AMD GPU 장치를 붙이지 못했습니다 (docker run --device /dev/kfd --device /dev/dri/$RENDER)."
+    fi
 fi
 
 # ───────────────────────────────────────────────
@@ -272,10 +386,28 @@ ok "/srv/users, /srv/shared (models/llm 포함), /srv/scratch"
 
 # ───────────────────────────────────────────────
 step "7/10 워크스페이스 이미지"
-docker build -t ironlab/workspace:latest "$SRC_DIR/deploy/workspace"
+if [[ "$GPU_VENDOR" == amd ]]; then
+    BUILD_ARGS=(--build-arg "BASE_IMAGE=$ROCM_IMAGE")
+    echo "  바탕 이미지: $ROCM_IMAGE (ROCm, 수 GB)"
+else
+    BUILD_ARGS=(--build-arg "CUDA_ARCH=$CUDA_ARCH")
+fi
+docker build "${BUILD_ARGS[@]}" -t ironlab/workspace:latest "$SRC_DIR/deploy/workspace"
 docker run --rm --entrypoint bash ironlab/workspace:latest -lc "conda config --show channels | grep -q conda-forge" \
     || die "워크스페이스 이미지의 conda 설정이 잘못됐습니다"
 ok "ironlab/workspace:latest"
+if [[ "$GPU_VENDOR" == amd ]]; then
+    GID_ARGS=()
+    for g in $(stat -c %g /dev/kfd "/dev/dri/$RENDER" | sort -un); do (( g != 0 )) && GID_ARGS+=(--group-add "$g"); done
+    if GFX_NAME=$(docker run --rm --device /dev/kfd --device "/dev/dri/$RENDER" "${GID_ARGS[@]}" \
+            ${GFX_OVERRIDE:+-e HSA_OVERRIDE_GFX_VERSION=$GFX_OVERRIDE} --entrypoint /opt/rocm/bin/rocminfo \
+            ironlab/workspace:latest 2>/dev/null | grep -m1 -oE 'gfx[0-9a-f]+'); then
+        ok "컨테이너 안 ROCm 이 GPU 를 봄 ($GFX_NAME)"
+    else
+        warn "컨테이너 안 rocminfo 가 GPU 를 찾지 못했습니다. 카드가 ROCm $ROCM_IMAGE 지원 목록에 있는지 확인하세요
+      (https://rocm.docs.amd.com/projects/install-on-linux/en/latest/reference/system-requirements.html)."
+    fi
+fi
 
 # 자체 점검: 실제 워크스페이스와 같은 제한(권한 축소, 사용자 소유 700 홈)에서 sshd 가 뜨는지 확인한다
 SELF_HOME=$(mktemp -d)
@@ -294,8 +426,10 @@ fi
 if [[ -n "$SELF_CID" ]]; then docker rm -f "$SELF_CID" >/dev/null 2>&1 || true; fi
 rmdir "$SELF_HOME" 2>/dev/null || true
 
-echo "  llama.cpp 서버 이미지를 받는 중 (수 GB, 처음 한 번만)..."
-if docker pull ghcr.io/ggml-org/llama.cpp:server-cuda; then
+LLM_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda
+[[ "$GPU_VENDOR" == amd ]] && LLM_IMAGE=ghcr.io/ggml-org/llama.cpp:server-rocm
+echo "  llama.cpp 서버 이미지($LLM_IMAGE)를 받는 중 (수 GB, 처음 한 번만)..."
+if docker pull "$LLM_IMAGE"; then
     ok "llama.cpp 서버 이미지 (로컬 LLM)"
 else
     warn "llama.cpp 이미지를 받지 못했습니다 — 처음 모델을 올릴 때 다시 받습니다"
@@ -303,7 +437,9 @@ fi
 # 다시 빌드하면서 이름을 잃은 예전 이미지 층을 지운다 (쓰이는 것은 지워지지 않는다)
 docker image prune -f >/dev/null 2>&1 || true
 IMAGE=ironlab/workspace:latest
-if [[ "${WITH_TRELLIS:-0}" == 1 ]]; then
+if [[ "$GPU_VENDOR" == amd ]]; then
+    [[ "${WITH_TRELLIS:-0}" == 1 ]] && warn "TRELLIS 이미지는 CUDA 전용이라 AMD 에서는 건너뜁니다"
+elif [[ "${WITH_TRELLIS:-0}" == 1 ]]; then
     step "7+/10 TRELLIS 이미지 (오래 걸림, 로그: /var/log/ironlab-trellis-build.log)"
     if ! docker build --progress=plain -t ironlab/workspace:trellis "$SRC_DIR/deploy/trellis" 2>&1 | tee /var/log/ironlab-trellis-build.log; then
         die "TRELLIS 이미지 빌드 실패: tail -60 /var/log/ironlab-trellis-build.log"
@@ -340,7 +476,7 @@ step "9/10 설정과 서비스"
 if [[ ! -f "$CONF" ]]; then
     CFG_HOST="$CFG_HOST" CFG_PORT="$PORT" CFG_TRUST="$CFG_TRUST" CFG_PUBLIC_HOST="$CFG_PUBLIC_HOST" \
     CFG_PUBLIC_URL="$CFG_PUBLIC_URL" CFG_SSH_BIND="$CFG_SSH_BIND" CFG_IMAGE="$IMAGE" CFG_GPU="$GPU_INDEX" \
-    CFG_SITE="${SITE_NAME:-ironlab}" \
+    CFG_SITE="${SITE_NAME:-ironlab}" CFG_VENDOR="$GPU_VENDOR" CFG_GFX="$GFX_OVERRIDE" \
     "$PREFIX/venv/bin/python" - "$PREFIX/src/deploy/config.example.toml" "$CONF" <<'EOF'
 # 예시 설정의 'key = 값' 줄에서 값만 바꾼다 (줄 끝 설명은 남긴다). 문자열은 TOML 규칙대로 따옴표를 친다.
 import json, os, re, sys
@@ -352,7 +488,8 @@ values = {
     "public_url": json.dumps(e["CFG_PUBLIC_URL"], ensure_ascii=False),
     "site_name": json.dumps(e["CFG_SITE"], ensure_ascii=False),
     "ssh_bind_ip": json.dumps(e["CFG_SSH_BIND"]), "workspace_image": json.dumps(e["CFG_IMAGE"]),
-    "gpu_index": e["CFG_GPU"],
+    "gpu_index": e["CFG_GPU"], "gpu_vendor": json.dumps(e["CFG_VENDOR"]),
+    "rocm_gfx_override": json.dumps(e["CFG_GFX"]),
 }
 out, seen = [], set()
 for line in open(src, encoding="utf-8").read().splitlines():
@@ -412,7 +549,9 @@ ok "ironlab 서비스 실행 중"
 # 생성기 환경(conda)이 공용에 아직 없으면 건너뛴다: 실행 스크립트만 깔면 화면은 켜지는데 작업이 실패한다.
 # 모델·환경을 처음 공용으로 옮기는 일은 따로 한 번: sudo bash deploy/shared-apps.sh --migrate-from <사용자>
 step "9+/10 생성기"
-if [[ -n "$(ls -A /srv/shared/models/envs 2>/dev/null)" ]]; then
+if [[ "$GPU_VENDOR" == amd ]]; then
+    ok "건너뜀: 생성기 실행 스크립트는 CUDA 전용입니다 (AMD 에서는 워크스페이스·작업 큐·로컬 LLM 을 씁니다)"
+elif [[ -n "$(ls -A /srv/shared/models/envs 2>/dev/null)" ]]; then
     if bash "$SRC_DIR/deploy/shared-apps.sh" > /var/log/ironlab-shared-apps.log 2>&1; then
         ok "실행 스크립트 공용에 올림, 사용자 홈 링크 (기록: /var/log/ironlab-shared-apps.log)"
     else
@@ -455,7 +594,7 @@ cat <<EOF
 ────────────────────────────────────────────
  설치 완료
    콘솔     $CONSOLE
-   GPU      ${GPU_LINE#GPU *: }
+   GPU      ${GPU_LINE#GPU *: }$( (( IS_WSL )) && echo ' (Windows WSL2)')
    SSH 포트 22001~ (사용자별)
    이미지   $IMAGE
    설정     $CONF  (고친 뒤: sudo systemctl restart ironlab)

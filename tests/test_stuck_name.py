@@ -94,7 +94,7 @@ def rt(settings):
     r = object.__new__(DockerRuntime)       # Docker 데몬에 붙지 않도록 __init__ 을 건너뛴다
     r.s, r._docker, r.client = settings, docker, FakeClient()
     r._Mount = lambda **kw: kw
-    r._gpu = []
+    r._gpu, r._gpu_env, r.vendor = {}, {}, "nvidia"
     return r
 
 

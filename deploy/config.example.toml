@@ -29,7 +29,9 @@ default_cpus = 8
 default_mem_gb = 16
 default_disk_gb = 200
 
-gpu_index = 0                      # GPU 가 여러 장이면 맡을 GPU 번호 (nvidia-smi 순서). 컨테이너에는 이 한 장만 보인다
+gpu_vendor = "auto"                # nvidia | amd | auto
+gpu_index = 0                      # GPU 가 여러 장이면 맡을 GPU 번호 (nvidia-smi 순서, AMD 는 card 번호 순). 컨테이너에는 이 한 장만 보인다
+rocm_gfx_override = ""             # AMD: ROCm 공식 지원 밖 카드의 HSA_OVERRIDE_GFX_VERSION (RX 6700·6600 은 "10.3.0", RX 7600 은 "11.0.0")
 gpu_total_vram_gb = 0              # 0이면 GPU 에서 읽는다
 vram_reserve_gb = 1.0
 max_running_jobs_per_user = 1
@@ -44,7 +46,7 @@ idle_stop_hours = 12
 vram_alert_gb = 0                  # 이만큼(GB) 넘게 쓰면 알림. 0이면 GPU 용량의 92%
 
 # 로컬 LLM (llama.cpp 서버 하나를 모두가 공유)
-llm_image = "ghcr.io/ggml-org/llama.cpp:server-cuda"
+llm_image = ""                     # 비우면 GPU 에 맞게 (NVIDIA :server-cuda, AMD :server-rocm). ROCm 이 안 되는 AMD 카드는 "ghcr.io/ggml-org/llama.cpp:server-vulkan"
 llm_port = 8800                    # 127.0.0.1 에서만 열림
 llm_idle_unload_min = 20           # 이만큼 안 쓰면 자동으로 내림 (0이면 끔)
 network_name = "ironlab"           # 워크스페이스·작업 컨테이너 네트워크

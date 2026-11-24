@@ -7,6 +7,7 @@ ironlab이 만든 컨테이너는 모두 라벨로 식별한다:
 from __future__ import annotations
 
 import logging
+import os
 import random
 import re
 import shlex
@@ -15,6 +16,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from .config import Settings
+from .gpu import amd_cards, resolve_vendor
 from .users import ssh_port
 
 log = logging.getLogger("ironlab.runtime")
@@ -88,6 +90,35 @@ def llm_command(model: dict) -> list[str]:
     if model.get("extra_args"):
         cmd += shlex.split(model["extra_args"])
     return cmd
+
+
+def gpu_container_args(settings: Settings, vendor: str, sys_root: Path = Path("/sys"),
+                       dev_root: Path = Path("/dev")) -> tuple[dict, dict]:
+    """컨테이너에 GPU 한 장(gpu_index)을 붙이는 Docker 인자와 환경변수.
+
+    NVIDIA: NVIDIA Container Toolkit 의 DeviceRequest.
+    AMD: /dev/kfd 와 그 GPU 의 render 노드 하나. ROCm 은 render 노드가 보이는 GPU 만 쓴다.
+    장치 파일의 그룹(render, video)에 들어 있어야 열 수 있어, 그 GID 를 덧붙인다. 작업 컨테이너는 group_add 로,
+    워크스페이스의 SSH 세션은 진입 스크립트가 IRONLAB_GPU_GIDS 를 보고 /etc/group 에 넣는다.
+    """
+    if vendor == "amd":
+        cards = amd_cards(sys_root)
+        idx = settings.gpu_index
+        card = cards[idx] if 0 <= idx < len(cards) else None
+        if card is None or not card["render"]:
+            log.error("AMD GPU %d 의 render 노드를 찾지 못했습니다. 컨테이너에 GPU 를 붙이지 않습니다", idx)
+            return {}, {}
+        kfd, render = dev_root / "kfd", dev_root / "dri" / card["render"]
+        gids = sorted({os.stat(p).st_gid for p in (kfd, render) if p.exists()} - {0})
+        args = {"devices": [f"{kfd}:/dev/kfd:rwm", f"{render}:/dev/dri/{card['render']}:rwm"],
+                "group_add": [str(g) for g in gids]}
+        env = {"IRONLAB_GPU_GIDS": ",".join(str(g) for g in gids)}
+        if settings.rocm_gfx_override:
+            env["HSA_OVERRIDE_GFX_VERSION"] = settings.rocm_gfx_override
+        return args, env
+    from docker.types import DeviceRequest
+    # 관리하는 GPU 한 장만 컨테이너에 보인다. 여러 장인 서버에서 스케줄러가 모르는 GPU 를 쓰지 않게 한다
+    return {"device_requests": [DeviceRequest(device_ids=[str(settings.gpu_index)], capabilities=[["gpu"]])]}, {}
 
 
 class Runtime(ABC):
@@ -240,11 +271,11 @@ class DockerRuntime(Runtime):
     def __init__(self, settings: Settings):
         super().__init__(settings)
         import docker
-        from docker.types import DeviceRequest, Mount
+        from docker.types import Mount
         self._docker = docker
         self._Mount = Mount
-        # 관리하는 GPU 한 장만 컨테이너에 보인다. 여러 장인 서버에서 스케줄러가 모르는 GPU 를 쓰지 않게 한다
-        self._gpu = [DeviceRequest(device_ids=[str(settings.gpu_index)], capabilities=[["gpu"]])]
+        self.vendor = resolve_vendor(settings)
+        self._gpu, self._gpu_env = gpu_container_args(settings, self.vendor)
         self.client = docker.from_env()
         self._cgroup = CgroupStats()
 
@@ -350,9 +381,9 @@ class DockerRuntime(Runtime):
             name, self.s.workspace_image,
             hostname=f"{user['name']}-ws",
             labels={LABEL: "1", "ironlab.kind": "workspace", "ironlab.user": user["name"]},
-            environment=self.env_for(user),
+            environment=self.env_for(user) | self._gpu_env,
             mounts=self._mounts(user, include_keys=True),
-            device_requests=self._gpu,
+            **self._gpu,
             nano_cpus=int(user["cpus"] * 1e9),
             mem_limit=mem_limit(user["mem_gb"]),
             memswap_limit=mem_limit(user["mem_gb"]),
@@ -411,12 +442,12 @@ class DockerRuntime(Runtime):
                     "ironlab.job_id": str(job["id"])},
             # 작업은 진입 스크립트를 거치지 않아 /etc/passwd 에 사용자가 없다. 이름을 묻는 도구
             # (getpass, git 등)가 실패하지 않게 환경변수로 알려 준다
-            environment=self.env_for(user) | {"IRONLAB_JOB_ID": str(job["id"]),
+            environment=self.env_for(user) | self._gpu_env | {"IRONLAB_JOB_ID": str(job["id"]),
                                               "IRONLAB_VRAM_GB": str(job["vram_gb"]),
                                               "USER": "dev", "LOGNAME": "dev"},
             mounts=self._mounts(user, include_keys=False),
             network=self.s.network_name,
-            device_requests=self._gpu,
+            **self._gpu,
             nano_cpus=int(job["cpus"] * 1e9),
             mem_limit=mem_limit(job["mem_gb"]),
             memswap_limit=mem_limit(job["mem_gb"]),
@@ -513,12 +544,13 @@ class DockerRuntime(Runtime):
         for old in self._find(LLM_NAME):
             self._discard(old)
         c = self._run_named(
-            LLM_NAME, self.s.llm_image,
+            LLM_NAME, self.s.llm_image_for(self.vendor),
             command=llm_command(model),
+            environment=self._gpu_env,
             labels={LABEL: "1", "ironlab.kind": "service", "ironlab.model": model["name"],
                     "ironlab.loaded_by": loaded_by},
             mounts=[self._Mount(target="/models", source=str(self.s.llm_models_dir), type="bind", read_only=True)],
-            device_requests=self._gpu,
+            **self._gpu,
             ports={"8080/tcp": ("127.0.0.1", self.s.llm_port)},
             shm_size="4g",
             cap_drop=["ALL"],

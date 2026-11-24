@@ -39,14 +39,23 @@ class Plan:
 def plan_admissions(queued: list[dict], running: list[dict], *, total_gb: float,
                     reserve_gb: float, gpu_used_gb: float, actual_gb: dict[int, float],
                     max_per_user: int, starvation_s: float, now: float,
-                    extra_reserved_gb: float = 0.0) -> Plan:
-    """어떤 대기 작업을 지금 시작할지 정한다 (부수효과 없는 순수 함수)."""
+                    extra_reserved_gb: float = 0.0, per_process: bool = True) -> Plan:
+    """어떤 대기 작업을 지금 시작할지 정한다 (부수효과 없는 순수 함수).
+
+    per_process=False: GPU 가 프로세스별 사용량을 알려 주지 않는다 (Windows 의 WSL2). 그때는 실행 중인 작업과
+    LLM 이 예약만큼 쓴다고 보고, 실제 사용량이 예약 합보다 크면 그만큼(다른 프로그램, 워크스페이스, 화면 출력)만 더 뺀다.
+    작업의 실제 사용량을 모르면 작업 사용량을 큐 밖 사용량으로 한 번 더 세게 되기 때문이다.
+    """
     plan = Plan()
-    jobs_actual = sum(actual_gb.get(j["id"], 0.0) for j in running)
-    untracked = max(0.0, gpu_used_gb - jobs_actual)
-    reserved = sum(max(j["vram_gb"], actual_gb.get(j["id"], 0.0)) for j in running)
-    # extra_reserved_gb: 로딩 중이라 아직 VRAM 을 다 잡지 않은 서비스(LLM)의 몫
-    budget = total_gb - reserve_gb - reserved - untracked - extra_reserved_gb
+    if per_process:
+        jobs_actual = sum(actual_gb.get(j["id"], 0.0) for j in running)
+        untracked = max(0.0, gpu_used_gb - jobs_actual)
+        reserved = sum(max(j["vram_gb"], actual_gb.get(j["id"], 0.0)) for j in running)
+        # extra_reserved_gb: 로딩 중이라 아직 VRAM 을 다 잡지 않은 서비스(LLM)의 몫
+        budget = total_gb - reserve_gb - reserved - untracked - extra_reserved_gb
+    else:
+        known = sum(j["vram_gb"] for j in running) + extra_reserved_gb
+        budget = total_gb - reserve_gb - max(known, gpu_used_gb)
     capacity = total_gb - reserve_gb
 
     per_user: dict[str, int] = {}
@@ -159,10 +168,11 @@ class Scheduler:
 
     # ── 주기 실행 ──
     def tick(self, gpu_used_gb: float, actual_gb: dict[int, float], extra_reserved_gb: float = 0.0,
-             hold: str | None = None) -> None:
-        """hold: 새 작업을 시작하면 안 되는 이유 (예: GPU 상태를 읽지 못함). 끝난 작업 정리는 그대로 한다."""
+             hold: str | None = None, per_process: bool = True) -> None:
+        """hold: 새 작업을 시작하면 안 되는 이유 (예: GPU 상태를 읽지 못함). 끝난 작업 정리는 그대로 한다.
+        per_process: GPU 가 프로세스별 사용량을 알려 주는지 (WSL2 는 아니다)."""
         with self.lock:
-            self._tick(gpu_used_gb, actual_gb, extra_reserved_gb, hold)
+            self._tick(gpu_used_gb, actual_gb, extra_reserved_gb, hold, per_process)
 
     def reconcile(self, containers: list[dict]) -> int:
         """DB 가 모르는 작업 컨테이너(고아)를 정리한다.
@@ -189,7 +199,7 @@ class Scheduler:
         return removed
 
     def _tick(self, gpu_used_gb: float, actual_gb: dict[int, float], extra_reserved_gb: float = 0.0,
-              hold: str | None = None) -> None:
+              hold: str | None = None, per_process: bool = True) -> None:
         self._reap(actual_gb)
         running = self.db.all("SELECT * FROM jobs WHERE status='running'")
         queued = self.db.all("SELECT * FROM jobs WHERE status='queued'")
@@ -202,7 +212,7 @@ class Scheduler:
             gpu_used_gb=gpu_used_gb, actual_gb=actual_gb,
             max_per_user=self.s.max_running_jobs_per_user,
             starvation_s=self.s.starvation_minutes * 60, now=time.time(),
-            extra_reserved_gb=extra_reserved_gb)
+            extra_reserved_gb=extra_reserved_gb, per_process=per_process)
         self.reasons, self.budget_gb = plan.reasons, plan.budget_gb
         for job_id in plan.start:
             self._start(self.get(job_id))
